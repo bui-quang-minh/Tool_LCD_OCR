@@ -1,0 +1,6 @@
+train: F:\FSB\Sem1\IPV\train
+val: F:\FSB\Sem1\IPV\val
+
+nc: 2
+
+names: ["lcd_display", "torque_wrench"]
