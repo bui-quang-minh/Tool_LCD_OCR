@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 if __name__ == '__main__':
-    model = YOLO("yolo26m.pt")
+    model = YOLO("yolo26m-obb.pt")
     model.train(
         data="dataset.yaml", 
         epochs=100, 

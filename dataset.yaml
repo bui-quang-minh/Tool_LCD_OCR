@@ -1,6 +1,6 @@
-train: F:\FSB\Sem1\IPV\train
-val: F:\FSB\Sem1\IPV\val
+train: F:\clone\Tool_LCD_OCR\trainobb
+val: F:\clone\Tool_LCD_OCR\valobb
 
 nc: 2
 
-names: ["lcd_display", "torque_wrench"]
+names: ["lcd", "torque"]

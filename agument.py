@@ -17,8 +17,8 @@ def augment_training_data():
         
     ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
     
-    input_dir = "train(based)"
-    output_dir = "train_augmented"
+    input_dir = "trainobb(base)"
+    output_dir = "trainobb"
     
     os.makedirs(f"{output_dir}/images", exist_ok=True)
     os.makedirs(f"{output_dir}/labels", exist_ok=True)
