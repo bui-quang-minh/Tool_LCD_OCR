@@ -2,9 +2,10 @@
 IPV - Tool & LCD detection app.
 Option 1: Run YOLO on validation set.
 Option 2: Load image (file dialog or drag-and-drop).
-Shows bounding boxes, LCD crop, transforms for OCR, and Tesseract OCR.
+Shows bounding boxes, LCD crop, and OCR via model in OCR_Model (with bbox overlay).
 """
 import os
+import re
 import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -13,14 +14,25 @@ from PIL import Image, ImageTk
 import cv2
 import numpy as np
 
-# Project paths
-PROJECT_ROOT = Path(r"F:\FSB\Sem1\IPV")
-MODEL_PATH = PROJECT_ROOT / r"runs\detect\train10\weights\best.pt"
-VAL_DIR = PROJECT_ROOT / "val\images"
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-# Seven-segment display format: 2 digits before decimal, 1 after (e.g. 82.1)
-TESSERACT_DIGITS_BEFORE = 2
-TESSERACT_DIGITS_AFTER = 1
+# Project paths (prefer OBB model from runs folder)
+PROJECT_ROOT = Path(__file__).resolve().parent
+_OBB_PATHS = [
+    PROJECT_ROOT / "runs" / "runs" / "obb" / "train" / "weights" / "best.pt",
+    PROJECT_ROOT / "runs" / "obb" / "train" / "weights" / "best.pt",
+]
+MODEL_PATH = next((p for p in _OBB_PATHS if p.exists()), PROJECT_ROOT / r"runs\detect\train10\weights\best.pt")
+VAL_DIR = PROJECT_ROOT / "val" / "images"
+if not Path(VAL_DIR).exists():
+    VAL_DIR = PROJECT_ROOT / "trainobb(base)" / "images"
+RAW_IMAGE_DIR = PROJECT_ROOT / "Raw Image"
+OCR_MODEL_DIR = PROJECT_ROOT / "OCR_Model"
+OCR_MODEL_WEIGHTS = OCR_MODEL_DIR / "runs" / "obb" / "train3" / "weights" / "best.pt"
+# OCR model class names (digits + symbols)
+OCR_CLASS_NAMES = [".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "nm", "mp"]
+# Black border padding around crop for OCR so edge letters are not cut off
+OCR_PADDING = 24
+# Default rotation when OBB angle not available (e.g. 48 for your calibration view)
+DEFAULT_ROTATION_DEG = 48.0
 
 # Class names (from dataset.yaml)
 CLASS_NAMES = ["lcd_display", "torque_wrench"]
@@ -48,6 +60,18 @@ def get_val_images():
     return sorted(set(images))
 
 
+def get_raw_images():
+    """Return list of image paths in Raw Image folder."""
+    raw_path = Path(RAW_IMAGE_DIR)
+    if not raw_path.exists():
+        return []
+    exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+    images = []
+    for ext in exts:
+        images.extend(raw_path.glob(f"*{ext}"))
+    return sorted(set(images))
+
+
 def load_yolo():
     """Load YOLO model."""
     try:
@@ -59,39 +83,342 @@ def load_yolo():
         return None
 
 
+def load_ocr_model():
+    """Load OCR YOLO model from OCR_Model folder. Returns None if not found or error."""
+    if not OCR_MODEL_WEIGHTS.exists():
+        return None
+    try:
+        from ultralytics import YOLO
+        return YOLO(str(OCR_MODEL_WEIGHTS))
+    except Exception:
+        return None
+
+
+# Expected OCR format: xx.xnm (2 digits, decimal, 1 digit, "nm" or "mp")
+OCR_FORMAT_RE = re.compile(r"^\d{2}\.\d{1}(?:nm|mp)$")
+
+
+def _ocr_validate_format(text):
+    """Return True if text matches xx.xnm or xx.xmp."""
+    if not text:
+        return False
+    return bool(OCR_FORMAT_RE.match(text.strip().lower()))
+
+
+def _ocr_fix_format(raw):
+    """Try to fix raw OCR string to xx.xnm. Returns (display_string, was_fixed) or (None, False) if not fixable."""
+    if not raw:
+        return None, False
+    digits_only = "".join(c for c in raw if c.isdigit())
+    s = "".join(c for c in raw if c.isdigit() or c == ".")
+    # Already xx.xnm or xx.xmp
+    if _ocr_validate_format(raw.strip()):
+        out = raw.strip().lower()
+        return (out.replace("mp", "nm"), False)
+    # Already xx.x (2 digits, dot, 1 digit) -> add nm
+    if len(s) == 4 and s[2] == "." and s[:2].isdigit() and s[3].isdigit():
+        return s + "nm", True
+    # Exactly 3 digits -> xx.xnm (e.g. 511 -> 51.1nm)
+    if len(digits_only) == 3:
+        return f"{digits_only[0]}{digits_only[1]}.{digits_only[2]}nm", True
+    # 4+ digits, no decimal: use first 3 as xx.x
+    if len(digits_only) >= 3:
+        return f"{digits_only[0]}{digits_only[1]}.{digits_only[2]}nm", True
+    # One dot: try xx.x (e.g. "51.1" -> 51.1nm)
+    if "." in s:
+        parts = s.split(".")
+        if len(parts) == 2 and len(parts[0]) >= 2 and parts[1]:
+            a, b = parts[0][-2:], parts[1][0] if parts[1] else "0"
+            return f"{a}.{b}nm", True
+    return None, False
+
+
+def _ocr_format_with_retries(ocr_model, image_bgr, max_tries=10):
+    """Run OCR up to max_tries times with a different filter each try; validate/fix to xx.xnm. Returns (display_string, annotated_image)."""
+    best_fixed = None
+    best_was_fixed = False
+    last_vis = None
+    last_raw = ""
+    for attempt in range(max_tries):
+        filtered = _ocr_apply_try_filter(image_bgr, attempt)
+        vis, raw = run_ocr_model_annotated(ocr_model, filtered)
+        if vis is not None:
+            last_vis = vis
+        last_raw = raw or ""
+        fixed, was_fixed = _ocr_fix_format(last_raw)
+        if fixed and _ocr_validate_format(fixed):
+            display = f"{fixed} (fixed)" if was_fixed else fixed
+            return display, last_vis
+        if fixed:
+            best_fixed = fixed
+            best_was_fixed = was_fixed
+    # No valid result in max_tries
+    if best_fixed is not None:
+        return f"{best_fixed} (fixed) ({max_tries} tried)", last_vis
+    if not last_raw or not any(c.isdigit() for c in last_raw):
+        return "(can not read image)", last_vis
+    return f"{last_raw.strip()} ({max_tries} tried)", last_vis
+
+
+def add_ocr_padding(image_bgr_or_gray, padding=None):
+    """Add a black border around the image so edge characters are not cut off. Returns BGR image or None."""
+    if image_bgr_or_gray is None or getattr(image_bgr_or_gray, "size", 0) == 0:
+        return None
+    if padding is None:
+        padding = OCR_PADDING
+    img = image_bgr_or_gray
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    h, w = img.shape[:2]
+    new_h, new_w = h + 2 * padding, w + 2 * padding
+    out = np.zeros((new_h, new_w, 3), dtype=img.dtype)
+    out[:] = (0, 0, 0)
+    out[padding : padding + h, padding : padding + w] = img
+    return out
+
+
+def _ocr_padded_or_original(image_bgr_or_gray):
+    """Return padded image for OCR, or original if padding fails. Never use 'or' with numpy arrays."""
+    padded = add_ocr_padding(image_bgr_or_gray)
+    if padded is None:
+        return image_bgr_or_gray
+    return padded
+
+
+def _ocr_apply_try_filter(image_bgr, try_index):
+    """Apply a different filter for each OCR retry (0..9). Returns BGR image for OCR."""
+    if image_bgr is None or getattr(image_bgr, "size", 0) == 0:
+        return image_bgr
+    filters = [
+        lambda im: im,  # 0: original
+        lambda im: cv2.cvtColor(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR),  # 1: grayscale
+        lambda im: _ocr_bgr_to_binary_otsu(im),  # 2: binary Otsu
+        lambda im: _ocr_bgr_to_binary_adaptive(im),  # 3: binary adaptive
+        lambda im: cv2.resize(im, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC),  # 4: resize 2x
+        lambda im: cv2.cvtColor(cv2.resize(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2BGR),  # 5: grayscale + resize 2x
+        lambda im: _ocr_bgr_to_binary_otsu(cv2.GaussianBlur(im, (3, 3), 0)),  # 6: blur + binary Otsu
+        lambda im: _ocr_morph_open(im),  # 7: morph open
+        lambda im: _ocr_invert(im),  # 8: invert
+        lambda im: _ocr_contrast(im),  # 9: contrast
+    ]
+    idx = try_index % len(filters)
+    out = filters[idx](image_bgr)
+    return out if out is not None and getattr(out, "size", 0) > 0 else image_bgr
+
+
+def _ocr_bgr_to_binary_otsu(bgr):
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, out = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def _ocr_bgr_to_binary_adaptive(bgr):
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    out = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def _ocr_morph_open(bgr):
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, bin_img = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = np.ones((2, 2), np.uint8)
+    out = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN, kernel)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def _ocr_invert(bgr):
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    out = cv2.bitwise_not(g)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def _ocr_contrast(bgr):
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    out = cv2.normalize(g, None, 0, 255, cv2.NORM_MINMAX)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def run_ocr_model(ocr_model, image_bgr_or_gray):
+    """Run OCR YOLO (OBB) on warped crop; return decoded string (left-to-right)."""
+    if ocr_model is None or image_bgr_or_gray is None or getattr(image_bgr_or_gray, "size", 0) == 0:
+        return ""
+    img = image_bgr_or_gray
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    try:
+        results = ocr_model(img, verbose=False)
+        r = results[0] if results else None
+        if r is None or not hasattr(r, "obb") or r.obb is None or len(r.obb) == 0:
+            return ""
+        # Collect (center_x, class_id) for left-to-right order
+        items = []
+        for i in range(len(r.obb)):
+            cls_id = int(r.obb.cls[i].item())
+            pts = r.obb.xyxyxyxy[i].cpu().numpy() if hasattr(r.obb.xyxyxyxy[i], "cpu") else r.obb.xyxyxyxy[i]
+            corners = np.array(pts, dtype=np.float64).reshape(4, 2)
+            center_x = float(corners[:, 0].mean())
+            items.append((center_x, cls_id))
+        items.sort(key=lambda x: x[0])
+        names = OCR_CLASS_NAMES
+        return "".join(names[cid] if 0 <= cid < len(names) else "?" for _, cid in items)
+    except Exception as e:
+        return f"OCR error: {e}"
+
+
+def run_ocr_model_annotated(ocr_model, image_bgr_or_gray):
+    """Run OCR YOLO (OBB) on image; return (annotated BGR image with bboxes, decoded string)."""
+    if ocr_model is None or image_bgr_or_gray is None or getattr(image_bgr_or_gray, "size", 0) == 0:
+        return None, ""
+    img = image_bgr_or_gray
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    vis = img.copy()
+    try:
+        results = ocr_model(img, verbose=False)
+        r = results[0] if results else None
+        if r is None or not hasattr(r, "obb") or r.obb is None or len(r.obb) == 0:
+            return vis, ""
+        names = OCR_CLASS_NAMES
+        items = []
+        for i in range(len(r.obb)):
+            cls_id = int(r.obb.cls[i].item())
+            conf = float(r.obb.conf[i].item())
+            pts = r.obb.xyxyxyxy[i].cpu().numpy() if hasattr(r.obb.xyxyxyxy[i], "cpu") else r.obb.xyxyxyxy[i]
+            corners = np.array(pts, dtype=np.int32).reshape(4, 2)
+            center_x = float(corners[:, 0].mean())
+            items.append((center_x, cls_id, conf, corners))
+        items.sort(key=lambda x: x[0])
+        text = "".join(names[cid] if 0 <= cid < len(names) else "?" for _, cid, _, _ in items)
+        for _, cls_id, _, corners in items:
+            label = names[cls_id] if 0 <= cls_id < len(names) else "?"
+            cv2.polylines(vis, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
+            # Draw label under the box so it won't overlap
+            bottom_y = int(corners[:, 1].max())
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cx = int(corners[:, 0].mean())
+            tx = cx - tw // 2
+            ty = bottom_y + th + 4
+            cv2.putText(vis, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        return vis, text
+    except Exception as e:
+        return vis, f"OCR error: {e}"
+
+
 def run_inference(model, image_bgr):
-    """Run YOLO on BGR image; return (annotated BGR image, list of detections)."""
+    """Run YOLO on BGR image; return (annotated BGR image, list of detections).
+    Detections: OBB mode: (class_id, conf, corners_4, angle_deg); else (class_id, x1, y1, x2, y2, conf).
+    """
     results = model(image_bgr, verbose=False)
-    detections = []  # (class_id, x1, y1, x2, y2, conf)
+    detections = []
     out = image_bgr.copy()
-    for r in results:
-        if r.boxes is None:
-            continue
-        for box in r.boxes:
-            cls_id = int(box.cls[0])
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            detections.append((cls_id, x1, y1, x2, y2, conf))
+    r = results[0] if results else None
+    # OBB model returns result.obb with xyxyxyxy (4 corners) and angle in xywhr
+    if r is not None and hasattr(r, "obb") and r.obb is not None and len(r.obb) > 0:
+        for i in range(len(r.obb)):
+            cls_id = int(r.obb.cls[i].item())
+            conf = float(r.obb.conf[i].item())
+            # xyxyxyxy: 4 corners (x1,y1, x2,y2, x3,y3, x4,y4)
+            pts = r.obb.xyxyxyxy[i].cpu().numpy() if hasattr(r.obb.xyxyxyxy[i], "cpu") else r.obb.xyxyxyxy[i]
+            corners = np.array(pts, dtype=np.int32).reshape(4, 2)
+            # Angle from xywhr (x, y, w, h, r); ultralytics may use radians or degrees
+            xywhr = r.obb.xywhr[i].cpu().numpy() if hasattr(r.obb.xywhr[i], "cpu") else r.obb.xywhr[i]
+            r_val = float(xywhr[4])
+            angle_deg = np.degrees(r_val) if abs(r_val) <= np.pi + 0.1 else r_val
+            detections.append((cls_id, conf, corners, angle_deg))
             color = (0, 255, 0) if cls_id == LCD_CLASS_ID else (255, 165, 0)
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+            cv2.polylines(out, [corners], isClosed=True, color=color, thickness=2)
             label = f"{CLASS_NAMES[cls_id]} {conf:.2f}"
-            cv2.putText(out, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.putText(out, label, (int(corners[0][0]), int(corners[0][1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    else:
+        for r in results:
+            if r.boxes is None:
+                continue
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                detections.append((cls_id, x1, y1, x2, y2, conf))
+                color = (0, 255, 0) if cls_id == LCD_CLASS_ID else (255, 165, 0)
+                cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+                label = f"{CLASS_NAMES[cls_id]} {conf:.2f}"
+                cv2.putText(out, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return out, detections
 
 
+def _is_obb_detection(det):
+    """True if det is (class_id, conf, corners_4, angle_deg)."""
+    if len(det) != 4:
+        return False
+    c = np.asarray(det[2])
+    return c.shape == (4, 2)
+
+
+def _default_rotation_for_crop(crop):
+    """Default rotation: 90° if shorter side is upright (portrait), else 180°."""
+    if crop is None or crop.size == 0:
+        return 180.0
+    h, w = crop.shape[:2]
+    # Portrait = height > width (shorter side horizontal, longer side upright)
+    return 90.0 if h > w else 180.0
+
+
+def _order_quad_tl_tr_br_bl(corners):
+    """Order 4 corners as [top-left, top-right, bottom-right, bottom-left] so warp is never mirrored.
+    OBB can return corners in varying order; this gives a consistent orientation.
+    """
+    pts = np.asarray(corners, dtype=np.float32)
+    if pts.shape != (4, 2):
+        return pts
+    # Center
+    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+    # Top-left = smallest x+y, bottom-right = largest x+y
+    sums = pts[:, 0] + pts[:, 1]
+    tl_idx = int(np.argmin(sums))
+    br_idx = int(np.argmax(sums))
+    other = [i for i in range(4) if i not in (tl_idx, br_idx)]
+    # Of the other two: top-right has larger x, bottom-left has smaller x
+    if pts[other[0], 0] >= pts[other[1], 0]:
+        tr_idx, bl_idx = other[0], other[1]
+    else:
+        tr_idx, bl_idx = other[1], other[0]
+    return np.array([pts[tl_idx], pts[tr_idx], pts[br_idx], pts[bl_idx]], dtype=np.float32)
+
+
 def crop_lcd_regions(image_bgr, detections, class_id=LCD_CLASS_ID):
-    """Return list of BGR crops for given class (default LCD)."""
+    """Return (list of BGR crops, list of angles_deg for straightening).
+    OBB: crop by warping quad to rect, angle stored for init rotation. Axis-aligned: angle 0.
+    """
     h, w = image_bgr.shape[:2]
     crops = []
+    angles = []
     for det in detections:
-        cid, x1, y1, x2, y2, _ = det
-        if cid != class_id:
-            continue
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        if x2 > x1 and y2 > y1:
-            crops.append(image_bgr[y1:y2, x1:x2].copy())
-    return crops
+        if _is_obb_detection(det):
+            cid, conf, corners, angle_deg = det
+            if cid != class_id:
+                continue
+            # Order corners tl, tr, br, bl so the crop is never mirrored
+            src = _order_quad_tl_tr_br_bl(corners)
+            w1 = np.linalg.norm(src[1] - src[0])
+            w2 = np.linalg.norm(src[2] - src[3])
+            h1 = np.linalg.norm(src[3] - src[0])
+            h2 = np.linalg.norm(src[2] - src[1])
+            dw = int(max(10, (w1 + w2) / 2))
+            dh = int(max(10, (h1 + h2) / 2))
+            dst = np.array([[0, 0], [dw, 0], [dw, dh], [0, dh]], dtype=np.float32)
+            M = cv2.getPerspectiveTransform(src, dst)
+            crop = cv2.warpPerspective(image_bgr, M, (dw, dh), flags=cv2.INTER_LINEAR)
+            crops.append(crop)
+            angles.append(angle_deg)
+        else:
+            cid, x1, y1, x2, y2, _ = det
+            if cid != class_id:
+                continue
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 > x1 and y2 > y1:
+                crops.append(image_bgr[y1:y2, x1:x2].copy())
+                angles.append(0.0)
+    return crops, angles
 
 
 def apply_rotation(crop_bgr, angle_deg):
@@ -130,6 +457,22 @@ def apply_perspective(crop_bgr, src_quad):
     return cv2.warpPerspective(crop_bgr, M, (dw, dh), flags=cv2.INTER_LINEAR)
 
 
+def process_crop_for_export(crop_bgr, angle_deg, transform_name):
+    """Process a single LCD crop for export: full rect -> rotate -> transform. Returns BGR or gray array."""
+    if crop_bgr is None or crop_bgr.size == 0:
+        return None
+    h, w = crop_bgr.shape[:2]
+    quad = [(0, 0), (w, 0), (w, h), (0, h)]
+    out = apply_perspective(crop_bgr, quad)
+    if out is None:
+        out = crop_bgr
+    out = apply_rotation(out, angle_deg)
+    if out is None:
+        out = crop_bgr
+    out = apply_transform(out, transform_name)
+    return out
+
+
 def apply_transform(crop_bgr, transform_name):
     """Apply transform for OCR: grayscale, threshold, resize, etc."""
     if crop_bgr is None or crop_bgr.size == 0:
@@ -151,23 +494,6 @@ def apply_transform(crop_bgr, transform_name):
         g = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
         return cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     return crop_bgr
-
-
-def run_tesseract(image_bgr_or_gray, digits_before=None, digits_after=None):
-    """Run Tesseract OCR with ssd (seven-segment) language. Format: 2 digits, 1 decimal (e.g. 82.1)."""
-    if digits_before is None:
-        digits_before = TESSERACT_DIGITS_BEFORE
-    if digits_after is None:
-        digits_after = TESSERACT_DIGITS_AFTER
-    try:
-        import tesseract_ssd
-        return tesseract_ssd.read_7segment_tesseract(
-            image_bgr_or_gray,
-            digits_before=digits_before,
-            digits_after=digits_after,
-        )
-    except Exception as e:
-        return f"OCR error: {e}"
 
 
 def cv2_to_photoimage(bgr_or_gray):
@@ -201,30 +527,30 @@ class IPVApp:
         self.root.minsize(900, 600)
 
         self.model = None
+        self.ocr_model = None
         self.current_image_bgr = None
         self.current_annotated = None
         self.current_detections = []
         self.lcd_crops = []
+        self.lcd_crop_angles = []  # per-crop angle (deg) from OBB for init straightening
         self.current_crop_index = 0
         self.val_image_paths = []
         self.val_index = 0
         self.photo_main = None
         self.photo_crop = None
         self.rotate_angle = 0.0
-        self.calibration_quad = None  # list of 4 (x,y) in crop coords, or None = use full rect
-        self.calibration_dragging = None  # index of handle being dragged
-        self.calib_scale = 1.0
-        self.calib_offset_x = 0
-        self.calib_offset_y = 0
-        self._calib_photo = None
+        self.flip_h = False
+        self.flip_v = False
+        self._ocr_vis_photo = None  # photo for OCR result canvas
 
         self._build_ui()
         self._load_model()
 
     def _load_model(self):
         self.model = load_yolo()
+        self.ocr_model = load_ocr_model()
         if self.model is not None:
-            self.status_var.set("Model loaded.")
+            self.status_var.set("Model loaded." + (" OCR model loaded." if self.ocr_model else " (OCR model not found.)"))
         else:
             self.status_var.set("Failed to load model.")
 
@@ -282,15 +608,22 @@ class IPVApp:
         self.rotate_label = ttk.Label(rot_frame, text="0", font=("Segoe UI", 9), width=4)
         self.rotate_label.pack(side=tk.LEFT)
         ttk.Button(rot_frame, text="0°", width=3, command=lambda: self._set_rotate(0)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(rot_frame, text="+90°", width=4, command=self._rotate_90_cw).pack(side=tk.LEFT, padx=2)
+        ttk.Button(rot_frame, text="-90°", width=4, command=self._rotate_90_ccw).pack(side=tk.LEFT, padx=2)
+        ttk.Button(rot_frame, text="Default", width=5, command=self._set_rotate_default).pack(side=tk.LEFT, padx=2)
+        ttk.Button(right, text="Set current as default", command=self._set_current_as_default).pack(anchor=tk.W, pady=(2, 0))
+        # Flip (fix mirror/sideways)
+        flip_frame = ttk.Frame(right)
+        flip_frame.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(flip_frame, text="Orientation:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(flip_frame, text="Flip H", width=6, command=self._flip_h).pack(side=tk.LEFT, padx=2)
+        ttk.Button(flip_frame, text="Flip V", width=6, command=self._flip_v).pack(side=tk.LEFT, padx=2)
+        ttk.Button(flip_frame, text="Auto-fix", width=8, command=self._auto_fix_orientation).pack(side=tk.LEFT, padx=2)
 
-        # Calibration (drag corners)
-        ttk.Label(right, text="Calibration (drag corners):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(8, 0))
-        self.calib_canvas = tk.Canvas(right, bg="#1a1a1a", highlightthickness=1, highlightbackground="#444", width=300, height=160)
-        self.calib_canvas.pack(fill=tk.X, pady=2)
-        self.calib_canvas.bind("<Button-1>", self._calib_on_press)
-        self.calib_canvas.bind("<B1-Motion>", self._calib_on_drag)
-        self.calib_canvas.bind("<ButtonRelease-1>", self._calib_on_release)
-        ttk.Button(right, text="Reset calibration", command=self._calib_reset).pack(anchor=tk.W, pady=2)
+        # OCR_Model result: LCD crop (same angle) with OCR bboxes drawn
+        ttk.Label(right, text="OCR_Model (bounding boxes):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(8, 0))
+        self.ocr_result_canvas = tk.Canvas(right, bg="#1a1a1a", highlightthickness=1, highlightbackground="#444", width=300, height=160)
+        self.ocr_result_canvas.pack(fill=tk.X, pady=2)
 
         ttk.Label(right, text="Transform:", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(8, 0))
         self.transform_var = tk.StringVar(value="None")
@@ -298,7 +631,9 @@ class IPVApp:
         cb = ttk.Combobox(right, textvariable=self.transform_var, values=transforms, state="readonly", width=22)
         cb.pack(fill=tk.X, pady=2)
         cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_crop_display())
-        ttk.Button(right, text="Run OCR (Tesseract)", command=self._run_ocr).pack(pady=8)
+        ttk.Button(right, text="Run OCR (OCR_Model)", command=self._run_ocr_model).pack(pady=8)
+        # ttk.Button(right, text="Export all detected to OCR_Model", command=self._export_all_to_ocr_model).pack(pady=4)
+        ttk.Label(right, text="OCR result:", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
         self.ocr_text = tk.Text(right, height=6, wrap=tk.WORD, font=("Consolas", 9), state=tk.DISABLED)
         self.ocr_text.pack(fill=tk.X, pady=4)
         ttk.Label(right, text="Crop index (if multiple LCDs):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
@@ -315,19 +650,16 @@ class IPVApp:
         # Drag and drop is enabled in main() when tkinterdnd2 is available
 
     def _get_processed_crop(self, crop):
-        """Apply calibration -> rotate -> transform to get final crop for display/OCR."""
+        """Apply rotate -> flip -> transform to get final crop for display/OCR (LCD crop with same angle)."""
         if crop is None or crop.size == 0:
             return None
-        h, w = crop.shape[:2]
-        quad = self.calibration_quad
-        if quad is None:
-            quad = [(0, 0), (w, 0), (w, h), (0, h)]
-        out = apply_perspective(crop, quad)
+        out = apply_rotation(crop, self.rotate_var.get())
         if out is None:
             out = crop
-        out = apply_rotation(out, self.rotate_var.get())
-        if out is None:
-            out = crop
+        if self.flip_h:
+            out = cv2.flip(out, 1)
+        if self.flip_v:
+            out = cv2.flip(out, 0)
         out = apply_transform(out, self.transform_var.get())
         return out if (out is not None and getattr(out, "size", 0) > 0) else crop
 
@@ -340,81 +672,97 @@ class IPVApp:
         self.rotate_label.config(text=f"{int(angle)}")
         self._refresh_crop_display()
 
-    def _calib_reset(self):
-        self.calibration_quad = None
-        self._refresh_calib_canvas()
+    def _set_rotate_default(self):
+        """Set rotation to the saved default (e.g. 48°)."""
+        global DEFAULT_ROTATION_DEG
+        self.rotate_var.set(float(DEFAULT_ROTATION_DEG))
+        self.rotate_label.config(text=f"{int(round(DEFAULT_ROTATION_DEG))}")
         self._refresh_crop_display()
 
-    def _canvas_to_crop(self, cx, cy):
-        """Convert calibration canvas coords to crop coords."""
-        x = (cx - self.calib_offset_x) / self.calib_scale
-        y = (cy - self.calib_offset_y) / self.calib_scale
-        return (x, y)
+    def _set_current_as_default(self):
+        """Save current rotation as the default for next load."""
+        global DEFAULT_ROTATION_DEG
+        DEFAULT_ROTATION_DEG = float(self.rotate_var.get())
+        self.status_var.set(f"Default rotation set to {int(round(DEFAULT_ROTATION_DEG))}°.")
 
-    def _crop_to_canvas(self, x, y):
-        """Convert crop coords to calibration canvas coords."""
-        cx = x * self.calib_scale + self.calib_offset_x
-        cy = y * self.calib_scale + self.calib_offset_y
-        return (cx, cy)
-
-    def _calib_on_press(self, event):
-        if not self.lcd_crops:
-            return
-        crop = self.lcd_crops[self.current_crop_index]
-        h, w = crop.shape[:2]
-        quad = self.calibration_quad if self.calibration_quad is not None else [(0, 0), (w, 0), (w, h), (0, h)]
-        handle_radius = 8
-        for i, (px, py) in enumerate(quad):
-            cx, cy = self._crop_to_canvas(px, py)
-            if abs(event.x - cx) <= handle_radius and abs(event.y - cy) <= handle_radius:
-                self.calibration_dragging = i
-                return
-        self.calibration_dragging = None
-
-    def _calib_on_drag(self, event):
-        if self.calibration_dragging is None or not self.lcd_crops:
-            return
-        crop = self.lcd_crops[self.current_crop_index]
-        h, w = crop.shape[:2]
-        px, py = self._canvas_to_crop(event.x, event.y)
-        px = max(0, min(w, px))
-        py = max(0, min(h, py))
-        if self.calibration_quad is None:
-            self.calibration_quad = [(0, 0), (w, 0), (w, h), (0, h)]
-        self.calibration_quad[self.calibration_dragging] = (px, py)
-        self._refresh_calib_canvas()
+    def _rotate_90_cw(self):
+        a = (self.rotate_var.get() + 90) % 360
+        if a > 180:
+            a -= 360
+        self.rotate_var.set(float(a))
+        self.rotate_label.config(text=f"{int(round(a))}")
         self._refresh_crop_display()
 
-    def _calib_on_release(self, event):
-        self.calibration_dragging = None
+    def _rotate_90_ccw(self):
+        a = (self.rotate_var.get() - 90) % 360
+        if a > 180:
+            a -= 360
+        self.rotate_var.set(float(a))
+        self.rotate_label.config(text=f"{int(round(a))}")
+        self._refresh_crop_display()
 
-    def _refresh_calib_canvas(self):
-        """Draw base crop and 4 draggable corner handles on calibration canvas."""
-        self.calib_canvas.delete("all")
+    def _flip_h(self):
+        self.flip_h = not self.flip_h
+        self._refresh_crop_display()
+
+    def _flip_v(self):
+        self.flip_v = not self.flip_v
+        self._refresh_crop_display()
+
+    def _auto_fix_orientation(self):
+        """Try rotations 0, 90, 180, 270 and flip H; pick orientation that gives best OCR (OCR_Model) result."""
         if not self.lcd_crops:
             return
+        if self.ocr_model is None:
+            self.ocr_model = load_ocr_model()
+        if self.ocr_model is None:
+            self.status_var.set("OCR model not loaded; cannot auto-fix.")
+            return
         crop = self.lcd_crops[self.current_crop_index]
-        h, w = crop.shape[:2]
-        cw = self.calib_canvas.winfo_width() or 300
-        ch = self.calib_canvas.winfo_height() or 160
-        scale = min(cw / w, ch / h, 1.0)
-        self.calib_scale = scale
-        self.calib_offset_x = cw / 2.0 - (w * scale) / 2.0
-        self.calib_offset_y = ch / 2.0 - (h * scale) / 2.0
-        fitted = fit_image_to_label(crop, cw, ch)
+        if crop is None or crop.size == 0:
+            return
+        base = crop
+        best_text = ""
+        best_score = -1
+        best_rot = 0.0
+        best_fh = False
+        for rot in (0, 90, 180, 270):
+            for flip_h in (False, True):
+                out = apply_rotation(base, float(rot))
+                if out is None:
+                    out = base
+                if flip_h:
+                    out = cv2.flip(out, 1)
+                out = apply_transform(out, self.transform_var.get())
+                if out is None or out.size == 0:
+                    continue
+                text = run_ocr_model(self.ocr_model, out)
+                digits = "".join(c for c in text if c.isdigit() or c == ".")
+                score = len(digits) + (10 if "." in digits else 0) + (5 if re.match(r"^\d+\.?\d*$", digits) else 0)
+                if score > best_score:
+                    best_score = score
+                    best_text = text
+                    best_rot = rot
+                    best_fh = flip_h
+        if best_score < 0:
+            return
+        self.rotate_var.set(float(best_rot))
+        self.rotate_label.config(text=f"{int(best_rot)}")
+        self.flip_h = best_fh
+        self._refresh_crop_display()
+        self.status_var.set(f"Auto-fix: rotation {int(best_rot)}°, flip_h={best_fh}. OCR: {best_text}")
+
+    def _refresh_ocr_result_canvas(self, annotated_bgr):
+        """Display OCR result image (crop with bboxes) in the OCR result canvas."""
+        self.ocr_result_canvas.delete("all")
+        if annotated_bgr is None or getattr(annotated_bgr, "size", 0) == 0:
+            return
+        cw = self.ocr_result_canvas.winfo_width() or 300
+        ch = self.ocr_result_canvas.winfo_height() or 160
+        fitted = fit_image_to_label(annotated_bgr, cw, ch)
         if fitted is not None:
-            self._calib_photo = cv2_to_photoimage(fitted)
-            self.calib_canvas.create_image(cw // 2, ch // 2, image=self._calib_photo, tags="calib_img")
-        quad = self.calibration_quad if self.calibration_quad is not None else [(0, 0), (w, 0), (w, h), (0, h)]
-        for i, (px, py) in enumerate(quad):
-            cx, cy = self._crop_to_canvas(px, py)
-            r = 6
-            self.calib_canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#0af", outline="white", width=2, tags="handle")
-        if len(quad) >= 4:
-            for i in range(4):
-                cx1, cy1 = self._crop_to_canvas(quad[i][0], quad[i][1])
-                cx2, cy2 = self._crop_to_canvas(quad[(i + 1) % 4][0], quad[(i + 1) % 4][1])
-                self.calib_canvas.create_line(cx1, cy1, cx2, cy2, fill="#0af", width=1, dash=(2, 2))
+            self._ocr_vis_photo = cv2_to_photoimage(fitted)
+            self.ocr_result_canvas.create_image(cw // 2, ch // 2, image=self._ocr_vis_photo, tags="ocr_vis")
 
     def _on_mode_change(self):
         if self.mode_var.get() == "val":
@@ -466,11 +814,16 @@ class IPVApp:
         if self.model is None or self.current_image_bgr is None:
             return
         self.current_annotated, self.current_detections = run_inference(self.model, self.current_image_bgr)
-        self.lcd_crops = crop_lcd_regions(self.current_image_bgr, self.current_detections, LCD_CLASS_ID)
+        self.lcd_crops, self.lcd_crop_angles = crop_lcd_regions(self.current_image_bgr, self.current_detections, LCD_CLASS_ID)
         self.current_crop_index = 0
-        self.calibration_quad = None
+        self.flip_h = False
+        self.flip_v = False
         self.spin_crop.config(to=max(0, len(self.lcd_crops) - 1))
         self.crop_index_var.set("0")
+        # Default rotation: 180° normally; 90° if shorter side is upright (portrait crop)
+        init_angle = _default_rotation_for_crop(self.lcd_crops[0]) if self.lcd_crops else 180.0
+        self.rotate_var.set(float(init_angle))
+        self.rotate_label.config(text=f"{int(round(init_angle))}")
         self._refresh_main_display()
         self._refresh_crop_display()
         self.status_var.set(f"Detected {len(self.current_detections)} objects, {len(self.lcd_crops)} LCD region(s).")
@@ -497,7 +850,11 @@ class IPVApp:
             idx = 0
         idx = max(0, min(idx, len(self.lcd_crops) - 1)) if self.lcd_crops else 0
         if idx != self.current_crop_index:
-            self.calibration_quad = None  # reset calibration when switching LCD crop
+            # Default rotation by crop aspect: 90° if portrait, else 180°
+            crop = self.lcd_crops[idx] if self.lcd_crops and idx < len(self.lcd_crops) else None
+            init_angle = _default_rotation_for_crop(crop) if crop is not None else 180.0
+            self.rotate_var.set(float(init_angle))
+            self.rotate_label.config(text=f"{int(round(init_angle))}")
         self.current_crop_index = idx
         self.crop_index_var.set(str(idx))
         crop = self.lcd_crops[idx] if self.lcd_crops else None
@@ -515,26 +872,85 @@ class IPVApp:
             cw = max(1, self.canvas_crop.winfo_width() or 320)
             ch = max(1, self.canvas_crop.winfo_height() or 240)
             self.canvas_crop.create_image(cw // 2, ch // 2, image=self.photo_crop, tags="crop")
-        self._refresh_calib_canvas()
 
-    def _run_ocr(self):
+    def _run_ocr_model(self):
+        """Run OCR model on LCD crop (same angle); draw bboxes in OCR result canvas and show text."""
         if not self.lcd_crops:
             self.ocr_text.config(state=tk.NORMAL)
             self.ocr_text.delete("1.0", tk.END)
             self.ocr_text.insert(tk.END, "No LCD crop available.")
             self.ocr_text.config(state=tk.DISABLED)
             return
+        if self.ocr_model is None:
+            self.ocr_model = load_ocr_model()
+            if self.ocr_model is None:
+                self.ocr_text.config(state=tk.NORMAL)
+                self.ocr_text.delete("1.0", tk.END)
+                self.ocr_text.insert(tk.END, f"OCR model not found.\nExpected: {OCR_MODEL_WEIGHTS}")
+                self.ocr_text.config(state=tk.DISABLED)
+                return
         idx = self.current_crop_index
         crop = self.lcd_crops[idx]
         to_ocr = self._get_processed_crop(crop)
         if to_ocr is None or getattr(to_ocr, "size", 0) == 0:
             to_ocr = crop
-        text = run_tesseract(to_ocr)
+        # Add black border so edge letters are not cut off (avoid 'or' with numpy array)
+        to_ocr_padded = _ocr_padded_or_original(to_ocr)
+        # One run to check if "nm" is in front (flip 180 and retry)
+        _, raw_check = run_ocr_model_annotated(self.ocr_model, to_ocr_padded)
+        flipped_180 = False
+        if raw_check and raw_check.strip().lower().startswith("nm"):
+            to_ocr_180 = cv2.rotate(to_ocr, cv2.ROTATE_180)
+            to_ocr_180_padded = _ocr_padded_or_original(to_ocr_180)
+            display_text, vis = _ocr_format_with_retries(self.ocr_model, to_ocr_180_padded)
+            a = (self.rotate_var.get() + 180) % 360
+            if a > 180:
+                a -= 360
+            self.rotate_var.set(float(a))
+            self.rotate_label.config(text=f"{int(round(a))}")
+            self._refresh_crop_display()
+            flipped_180 = True
+        else:
+            display_text, vis = _ocr_format_with_retries(self.ocr_model, to_ocr_padded)
+        self._refresh_ocr_result_canvas(vis)
         self.ocr_text.config(state=tk.NORMAL)
         self.ocr_text.delete("1.0", tk.END)
-        self.ocr_text.insert(tk.END, text)
+        self.ocr_text.insert(tk.END, display_text)
         self.ocr_text.config(state=tk.DISABLED)
-        self.status_var.set("OCR done.")
+        self.status_var.set("OCR (OCR_Model) done." + (" (flipped 180°: nm was in front)" if flipped_180 else ""))
+
+    def _export_all_to_ocr_model(self):
+        """Run detection on all images in Raw Image folder; save each LCD crop (as on right panel) to OCR_Model folder."""
+        if self.model is None:
+            messagebox.showerror("Export", "Model not loaded.")
+            return
+        raw_images = get_raw_images()
+        if not raw_images:
+            messagebox.showinfo(
+                "Export",
+                f"No images found in Raw Image folder.\nAdd images to:\n{RAW_IMAGE_DIR}",
+            )
+            return
+        OCR_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        transform_name = self.transform_var.get()
+        total_saved = 0
+        for path in raw_images:
+            img = cv2.imread(str(path))
+            if img is None:
+                continue
+            _, detections = run_inference(self.model, img)
+            crops, _ = crop_lcd_regions(img, detections, LCD_CLASS_ID)
+            for i, crop in enumerate(crops):
+                angle_deg = _default_rotation_for_crop(crop)
+                processed = process_crop_for_export(crop, angle_deg, transform_name)
+                if processed is None or getattr(processed, "size", 0) == 0:
+                    continue
+                out_name = f"{path.stem}_lcd{i}.png"
+                out_path = OCR_MODEL_DIR / out_name
+                cv2.imwrite(str(out_path), processed)
+                total_saved += 1
+        self.status_var.set(f"Exported {total_saved} crop(s) from {len(raw_images)} image(s) to {OCR_MODEL_DIR}.")
+        messagebox.showinfo("Export", f"Saved {total_saved} LCD crop image(s) to:\n{OCR_MODEL_DIR}")
 
 
 def main():
