@@ -160,6 +160,26 @@ def _ocr_format_with_retries(ocr_model, image_bgr, max_tries=10):
     return f"{last_raw.strip()} ({max_tries} tried)", last_vis
 
 
+def parse_nm_from_ocr_text(display_text):
+    """Extract numeric value in Nm from OCR result string. Returns float or None if not parseable."""
+    if not display_text or not isinstance(display_text, str):
+        return None
+    m = re.search(r"(\d+\.?\d*)", display_text.strip())
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def is_nm_in_range(value_nm, low=60.0, high=80.0):
+    """Return True if value is in [low, high] Nm (inclusive)."""
+    if value_nm is None:
+        return False
+    return low <= value_nm <= high
+
+
 def add_ocr_padding(image_bgr_or_gray, padding=None):
     """Add a black border around the image so edge characters are not cut off. Returns BGR image or None."""
     if image_bgr_or_gray is None or getattr(image_bgr_or_gray, "size", 0) == 0:
@@ -542,6 +562,7 @@ class IPVApp:
         self.flip_h = False
         self.flip_v = False
         self._ocr_vis_photo = None  # photo for OCR result canvas
+        self._ocr_after_id = None   # debounce: run OCR auto after crop display updates
 
         self._build_ui()
         self._load_model()
@@ -634,8 +655,21 @@ class IPVApp:
         ttk.Button(right, text="Run OCR (OCR_Model)", command=self._run_ocr_model).pack(pady=8)
         # ttk.Button(right, text="Export all detected to OCR_Model", command=self._export_all_to_ocr_model).pack(pady=4)
         ttk.Label(right, text="OCR result:", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
-        self.ocr_text = tk.Text(right, height=6, wrap=tk.WORD, font=("Consolas", 9), state=tk.DISABLED)
-        self.ocr_text.pack(fill=tk.X, pady=4)
+        ocr_result_row = ttk.Frame(right)
+        ocr_result_row.pack(fill=tk.X, pady=4)
+        # Left: text result
+        ocr_left = ttk.Frame(ocr_result_row)
+        ocr_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.ocr_text = tk.Text(ocr_left, height=6, wrap=tk.WORD, font=("Consolas", 9), state=tk.DISABLED)
+        self.ocr_text.pack(fill=tk.BOTH, expand=True)
+        # Right: OK (green) / NG (red) for 60–80 Nm
+        ocr_right = ttk.Frame(ocr_result_row)
+        ocr_right.pack(side=tk.RIGHT, padx=(8, 0), fill=tk.Y)
+        self.ocr_verdict_label = tk.Label(
+            ocr_right, text="—", font=("Segoe UI", 14, "bold"), width=4,
+            relief=tk.RIDGE, padx=8, pady=8, bg="#333", fg="#aaa",
+        )
+        self.ocr_verdict_label.pack(expand=True)
         ttk.Label(right, text="Crop index (if multiple LCDs):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
         self.crop_index_var = tk.StringVar(value="0")
         self.spin_crop = ttk.Spinbox(right, from_=0, to=0, textvariable=self.crop_index_var, width=6)
@@ -872,6 +906,27 @@ class IPVApp:
             cw = max(1, self.canvas_crop.winfo_width() or 320)
             ch = max(1, self.canvas_crop.winfo_height() or 240)
             self.canvas_crop.create_image(cw // 2, ch // 2, image=self.photo_crop, tags="crop")
+        # Auto-run OCR when warped image changes (debounced)
+        if self.lcd_crops:
+            if self._ocr_after_id is not None:
+                self.root.after_cancel(self._ocr_after_id)
+            self._ocr_after_id = self.root.after(300, self._do_auto_ocr)
+
+    def _do_auto_ocr(self):
+        """Called after debounce to run OCR without requiring button press."""
+        self._ocr_after_id = None
+        self._run_ocr_model()
+
+    def _update_ocr_verdict(self, display_text):
+        """Set OK (green) if parsed Nm in [60, 80], else NG (red). Use — if not parseable."""
+        value = parse_nm_from_ocr_text(display_text)
+        if value is None or display_text in ("No LCD crop available.", "") or "OCR model not found" in (display_text or ""):
+            self.ocr_verdict_label.config(text="—", bg="#333", fg="#aaa")
+            return
+        if is_nm_in_range(value, 60.0, 80.0):
+            self.ocr_verdict_label.config(text="OK", bg="#0a5f0a", fg="white")
+        else:
+            self.ocr_verdict_label.config(text="NG", bg="#8b0000", fg="white")
 
     def _run_ocr_model(self):
         """Run OCR model on LCD crop (same angle); draw bboxes in OCR result canvas and show text."""
@@ -880,6 +935,7 @@ class IPVApp:
             self.ocr_text.delete("1.0", tk.END)
             self.ocr_text.insert(tk.END, "No LCD crop available.")
             self.ocr_text.config(state=tk.DISABLED)
+            self._update_ocr_verdict("No LCD crop available.")
             return
         if self.ocr_model is None:
             self.ocr_model = load_ocr_model()
@@ -888,6 +944,7 @@ class IPVApp:
                 self.ocr_text.delete("1.0", tk.END)
                 self.ocr_text.insert(tk.END, f"OCR model not found.\nExpected: {OCR_MODEL_WEIGHTS}")
                 self.ocr_text.config(state=tk.DISABLED)
+                self._update_ocr_verdict("OCR model not found.")
                 return
         idx = self.current_crop_index
         crop = self.lcd_crops[idx]
@@ -917,6 +974,7 @@ class IPVApp:
         self.ocr_text.delete("1.0", tk.END)
         self.ocr_text.insert(tk.END, display_text)
         self.ocr_text.config(state=tk.DISABLED)
+        self._update_ocr_verdict(display_text)
         self.status_var.set("OCR (OCR_Model) done." + (" (flipped 180°: nm was in front)" if flipped_180 else ""))
 
     def _export_all_to_ocr_model(self):
