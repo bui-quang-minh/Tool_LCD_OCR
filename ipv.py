@@ -26,7 +26,9 @@ if not Path(VAL_DIR).exists():
     VAL_DIR = PROJECT_ROOT / "trainobb(base)" / "images"
 RAW_IMAGE_DIR = PROJECT_ROOT / "Raw Image"
 OCR_MODEL_DIR = PROJECT_ROOT / "OCR_Model"
-OCR_MODEL_WEIGHTS = OCR_MODEL_DIR / "runs" / "obb" / "train3" / "weights" / "best.pt"
+# New run (100 epochs, imgsz=320): OCR_Model/runs/obb/train/weights/best.pt
+OCR_MODEL_WEIGHTS = OCR_MODEL_DIR / "runs" / "obb" / "train" / "weights" / "best.pt"
+# OCR_MODEL_WEIGHTS = OCR_MODEL_DIR / "runs" / "obb" / "train3" / "weights" / "best.pt"  # old
 # OCR model class names (digits + symbols)
 OCR_CLASS_NAMES = [".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "nm", "mp"]
 # Black border padding around crop for OCR so edge letters are not cut off
@@ -121,9 +123,9 @@ def _ocr_fix_format(raw):
     # Exactly 3 digits -> xx.xnm (e.g. 511 -> 51.1nm)
     if len(digits_only) == 3:
         return f"{digits_only[0]}{digits_only[1]}.{digits_only[2]}nm", True
-    # 4+ digits, no decimal: use first 3 as xx.x
+    # 4+ digits: use first two + last (decimal digit). Avoids 6667 -> 66.6; use 66.7 when order/dup gives extra digit
     if len(digits_only) >= 3:
-        return f"{digits_only[0]}{digits_only[1]}.{digits_only[2]}nm", True
+        return f"{digits_only[0]}{digits_only[1]}.{digits_only[-1]}nm", True
     # One dot: try xx.x (e.g. "51.1" -> 51.1nm)
     if "." in s:
         parts = s.split(".")
@@ -133,10 +135,27 @@ def _ocr_fix_format(raw):
     return None, False
 
 
-def _ocr_format_with_retries(ocr_model, image_bgr, max_tries=10):
-    """Run OCR up to max_tries times with a different filter each try; validate/fix to xx.xnm. Returns (display_string, annotated_image)."""
+# Filter names for status (same order as _ocr_apply_try_filter)
+OCR_FILTER_NAMES = [
+    "Original", "Grayscale", "Binary (adaptive)", "Grayscale + Resize 2x",
+    "Border (morph gradient)", "Invert", "Contrast",
+]
+
+
+def _ocr_clean_display(display_text):
+    """Strip debug suffixes for OCR result box: ' (fixed)', ' (N tried)'."""
+    if not display_text or not isinstance(display_text, str):
+        return display_text
+    return display_text.split(" (")[0].strip()
+
+
+def _ocr_format_with_retries(ocr_model, image_bgr, max_tries=7):
+    """Run OCR up to max_tries times; validate/fix to xx.xnm. Returns (display_string, vis, n_tries, filter_index, raw_string)."""
     best_fixed = None
     best_was_fixed = False
+    best_vis = None
+    best_attempt = 0
+    best_raw = ""
     last_vis = None
     last_raw = ""
     for attempt in range(max_tries):
@@ -148,16 +167,18 @@ def _ocr_format_with_retries(ocr_model, image_bgr, max_tries=10):
         fixed, was_fixed = _ocr_fix_format(last_raw)
         if fixed and _ocr_validate_format(fixed):
             display = f"{fixed} (fixed)" if was_fixed else fixed
-            return display, last_vis
+            return display, last_vis, attempt + 1, attempt, last_raw
         if fixed:
             best_fixed = fixed
             best_was_fixed = was_fixed
-    # No valid result in max_tries
+            best_vis = last_vis
+            best_attempt = attempt
+            best_raw = last_raw
     if best_fixed is not None:
-        return f"{best_fixed} (fixed) ({max_tries} tried)", last_vis
+        return f"{best_fixed} (fixed) ({max_tries} tried)", (best_vis if best_vis is not None else last_vis), max_tries, best_attempt, best_raw
     if not last_raw or not any(c.isdigit() for c in last_raw):
-        return "(can not read image)", last_vis
-    return f"{last_raw.strip()} ({max_tries} tried)", last_vis
+        return "(can not read image)", last_vis, max_tries, -1, last_raw
+    return f"{last_raw.strip()} ({max_tries} tried)", last_vis, max_tries, -1, last_raw
 
 
 def parse_nm_from_ocr_text(display_text):
@@ -206,18 +227,15 @@ def _ocr_padded_or_original(image_bgr_or_gray):
 
 
 def _ocr_apply_try_filter(image_bgr, try_index):
-    """Apply a different filter for each OCR retry (0..9). Returns BGR image for OCR."""
+    """Apply a different filter for each OCR retry. Kept: 0,1,3,5,8,9 + border (kernel). Returns BGR image for OCR."""
     if image_bgr is None or getattr(image_bgr, "size", 0) == 0:
         return image_bgr
     filters = [
         lambda im: im,  # 0: original
         lambda im: cv2.cvtColor(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR),  # 1: grayscale
-        lambda im: _ocr_bgr_to_binary_otsu(im),  # 2: binary Otsu
         lambda im: _ocr_bgr_to_binary_adaptive(im),  # 3: binary adaptive
-        lambda im: cv2.resize(im, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC),  # 4: resize 2x
         lambda im: cv2.cvtColor(cv2.resize(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2BGR),  # 5: grayscale + resize 2x
-        lambda im: _ocr_bgr_to_binary_otsu(cv2.GaussianBlur(im, (3, 3), 0)),  # 6: blur + binary Otsu
-        lambda im: _ocr_morph_open(im),  # 7: morph open
+        lambda im: _ocr_bgr_to_border(im),  # border: morphological gradient (kernel)
         lambda im: _ocr_invert(im),  # 8: invert
         lambda im: _ocr_contrast(im),  # 9: contrast
     ]
@@ -234,7 +252,8 @@ def _ocr_bgr_to_binary_otsu(bgr):
 
 def _ocr_bgr_to_binary_adaptive(bgr):
     g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    out = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    denoised = cv2.GaussianBlur(g, (3, 3), 0)
+    out = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 3.5)
     return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
 
 
@@ -258,6 +277,29 @@ def _ocr_contrast(bgr):
     return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
 
 
+def _ocr_bgr_to_border(bgr):
+    """Kernel-based filter: morphological gradient to draw detected borders (dilate - erode)."""
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    kernel = np.ones((3, 3), np.uint8)
+    out = cv2.morphologyEx(g, cv2.MORPH_GRADIENT, kernel)
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+
+
+def _ocr_dedupe_items(items, img_width, min_gap_frac=0.03):
+    """Merge only detections that are very close in x (same character detected twice); keep higher confidence. Too high and the '.' is merged with digits."""
+    min_gap = max(4, img_width * min_gap_frac)
+    dedup = []
+    for t in items:
+        x = t[0]
+        conf = t[2] if len(t) >= 3 else 1.0
+        if dedup and abs(x - dedup[-1][0]) < min_gap:
+            if len(dedup[-1]) >= 3 and conf > dedup[-1][2]:
+                dedup[-1] = t
+        else:
+            dedup.append(t)
+    return dedup
+
+
 def run_ocr_model(ocr_model, image_bgr_or_gray):
     """Run OCR YOLO (OBB) on warped crop; return decoded string (left-to-right)."""
     if ocr_model is None or image_bgr_or_gray is None or getattr(image_bgr_or_gray, "size", 0) == 0:
@@ -270,17 +312,19 @@ def run_ocr_model(ocr_model, image_bgr_or_gray):
         r = results[0] if results else None
         if r is None or not hasattr(r, "obb") or r.obb is None or len(r.obb) == 0:
             return ""
-        # Collect (center_x, class_id) for left-to-right order
+        w = img.shape[1]
         items = []
         for i in range(len(r.obb)):
             cls_id = int(r.obb.cls[i].item())
+            conf = float(r.obb.conf[i].item())
             pts = r.obb.xyxyxyxy[i].cpu().numpy() if hasattr(r.obb.xyxyxyxy[i], "cpu") else r.obb.xyxyxyxy[i]
             corners = np.array(pts, dtype=np.float64).reshape(4, 2)
             center_x = float(corners[:, 0].mean())
-            items.append((center_x, cls_id))
+            items.append((center_x, cls_id, conf))
         items.sort(key=lambda x: x[0])
+        items = _ocr_dedupe_items(items, w)
         names = OCR_CLASS_NAMES
-        return "".join(names[cid] if 0 <= cid < len(names) else "?" for _, cid in items)
+        return "".join(names[cid] if 0 <= cid < len(names) else "?" for _, cid, *_ in items)
     except Exception as e:
         return f"OCR error: {e}"
 
@@ -300,6 +344,7 @@ def run_ocr_model_annotated(ocr_model, image_bgr_or_gray):
             return vis, ""
         names = OCR_CLASS_NAMES
         items = []
+        h, w = img.shape[:2]
         for i in range(len(r.obb)):
             cls_id = int(r.obb.cls[i].item())
             conf = float(r.obb.conf[i].item())
@@ -308,6 +353,7 @@ def run_ocr_model_annotated(ocr_model, image_bgr_or_gray):
             center_x = float(corners[:, 0].mean())
             items.append((center_x, cls_id, conf, corners))
         items.sort(key=lambda x: x[0])
+        items = _ocr_dedupe_items(items, w)
         text = "".join(names[cid] if 0 <= cid < len(names) else "?" for _, cid, _, _ in items)
         for _, cls_id, _, corners in items:
             label = names[cls_id] if 0 <= cls_id < len(names) else "?"
@@ -632,14 +678,6 @@ class IPVApp:
         ttk.Button(rot_frame, text="+90°", width=4, command=self._rotate_90_cw).pack(side=tk.LEFT, padx=2)
         ttk.Button(rot_frame, text="-90°", width=4, command=self._rotate_90_ccw).pack(side=tk.LEFT, padx=2)
         ttk.Button(rot_frame, text="Default", width=5, command=self._set_rotate_default).pack(side=tk.LEFT, padx=2)
-        ttk.Button(right, text="Set current as default", command=self._set_current_as_default).pack(anchor=tk.W, pady=(2, 0))
-        # Flip (fix mirror/sideways)
-        flip_frame = ttk.Frame(right)
-        flip_frame.pack(fill=tk.X, pady=(4, 0))
-        ttk.Label(flip_frame, text="Orientation:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(flip_frame, text="Flip H", width=6, command=self._flip_h).pack(side=tk.LEFT, padx=2)
-        ttk.Button(flip_frame, text="Flip V", width=6, command=self._flip_v).pack(side=tk.LEFT, padx=2)
-        ttk.Button(flip_frame, text="Auto-fix", width=8, command=self._auto_fix_orientation).pack(side=tk.LEFT, padx=2)
 
         # OCR_Model result: LCD crop (same angle) with OCR bboxes drawn
         ttk.Label(right, text="OCR_Model (bounding boxes):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(8, 0))
@@ -670,13 +708,6 @@ class IPVApp:
             relief=tk.RIDGE, padx=8, pady=8, bg="#333", fg="#aaa",
         )
         self.ocr_verdict_label.pack(expand=True)
-        ttk.Label(right, text="Crop index (if multiple LCDs):", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
-        self.crop_index_var = tk.StringVar(value="0")
-        self.spin_crop = ttk.Spinbox(right, from_=0, to=0, textvariable=self.crop_index_var, width=6)
-        self.spin_crop.pack(anchor=tk.W, pady=2)
-        self.spin_crop.bind("<Return>", lambda e: self._refresh_crop_display())
-        self.spin_crop.bind("<<Increment>>", lambda e: self._refresh_crop_display())
-        self.spin_crop.bind("<<Decrement>>", lambda e: self._refresh_crop_display())
 
         # Status
         ttk.Label(main, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).pack(fill=tk.X, pady=(4, 0))
@@ -852,8 +883,6 @@ class IPVApp:
         self.current_crop_index = 0
         self.flip_h = False
         self.flip_v = False
-        self.spin_crop.config(to=max(0, len(self.lcd_crops) - 1))
-        self.crop_index_var.set("0")
         # Default rotation: 180° normally; 90° if shorter side is upright (portrait crop)
         init_angle = _default_rotation_for_crop(self.lcd_crops[0]) if self.lcd_crops else 180.0
         self.rotate_var.set(float(init_angle))
@@ -878,19 +907,13 @@ class IPVApp:
         self.canvas_main.create_image(cw // 2, ch // 2, image=self.photo_main, tags="img")
 
     def _refresh_crop_display(self):
-        try:
-            idx = int(self.crop_index_var.get())
-        except ValueError:
-            idx = 0
-        idx = max(0, min(idx, len(self.lcd_crops) - 1)) if self.lcd_crops else 0
+        idx = 0  # only one LCD
         if idx != self.current_crop_index:
-            # Default rotation by crop aspect: 90° if portrait, else 180°
             crop = self.lcd_crops[idx] if self.lcd_crops and idx < len(self.lcd_crops) else None
             init_angle = _default_rotation_for_crop(crop) if crop is not None else 180.0
             self.rotate_var.set(float(init_angle))
             self.rotate_label.config(text=f"{int(round(init_angle))}")
         self.current_crop_index = idx
-        self.crop_index_var.set(str(idx))
         crop = self.lcd_crops[idx] if self.lcd_crops else None
         if crop is not None:
             display = self._get_processed_crop(crop)
@@ -959,7 +982,7 @@ class IPVApp:
         if raw_check and raw_check.strip().lower().startswith("nm"):
             to_ocr_180 = cv2.rotate(to_ocr, cv2.ROTATE_180)
             to_ocr_180_padded = _ocr_padded_or_original(to_ocr_180)
-            display_text, vis = _ocr_format_with_retries(self.ocr_model, to_ocr_180_padded)
+            display_text, vis, n_tries, filter_idx, raw_str = _ocr_format_with_retries(self.ocr_model, to_ocr_180_padded)
             a = (self.rotate_var.get() + 180) % 360
             if a > 180:
                 a -= 360
@@ -968,14 +991,21 @@ class IPVApp:
             self._refresh_crop_display()
             flipped_180 = True
         else:
-            display_text, vis = _ocr_format_with_retries(self.ocr_model, to_ocr_padded)
+            display_text, vis, n_tries, filter_idx, raw_str = _ocr_format_with_retries(self.ocr_model, to_ocr_padded)
         self._refresh_ocr_result_canvas(vis)
+        clean_text = _ocr_clean_display(display_text)
+        print(f"Recognize number (raw): {raw_str}")
         self.ocr_text.config(state=tk.NORMAL)
         self.ocr_text.delete("1.0", tk.END)
-        self.ocr_text.insert(tk.END, display_text)
+        self.ocr_text.insert(tk.END, clean_text)
         self.ocr_text.config(state=tk.DISABLED)
-        self._update_ocr_verdict(display_text)
-        self.status_var.set("OCR (OCR_Model) done." + (" (flipped 180°: nm was in front)" if flipped_180 else ""))
+        self._update_ocr_verdict(clean_text)
+        times_str = "1 time" if n_tries == 1 else f"{n_tries} times"
+        filter_name = OCR_FILTER_NAMES[filter_idx] if 0 <= filter_idx < len(OCR_FILTER_NAMES) else "—"
+        status = f"OCR done. Run {times_str}. Using {filter_name}."
+        if flipped_180:
+            status += " (flipped 180°: nm was in front)"
+        self.status_var.set(status)
 
     def _export_all_to_ocr_model(self):
         """Run detection on all images in Raw Image folder; save each LCD crop (as on right panel) to OCR_Model folder."""
