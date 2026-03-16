@@ -23,7 +23,8 @@ _OBB_PATHS = [
 MODEL_PATH = next((p for p in _OBB_PATHS if p.exists()), PROJECT_ROOT / r"runs\detect\train10\weights\best.pt")
 VAL_DIR = PROJECT_ROOT / "val" / "images"
 if not Path(VAL_DIR).exists():
-    VAL_DIR = PROJECT_ROOT / "trainobb(base)" / "images"
+    VAL_DIR = PROJECT_ROOT / "testfile"
+    #VAL_DIR = PROJECT_ROOT / "trainobb(base)" / "images"
 RAW_IMAGE_DIR = PROJECT_ROOT / "Raw Image"
 OCR_MODEL_DIR = PROJECT_ROOT / "OCR_Model"
 # New run (100 epochs, imgsz=320): OCR_Model/runs/obb/train/weights/best.pt
@@ -430,24 +431,26 @@ def _default_rotation_for_crop(crop):
 
 def _order_quad_tl_tr_br_bl(corners):
     """Order 4 corners as [top-left, top-right, bottom-right, bottom-left] so warp is never mirrored.
-    OBB can return corners in varying order; this gives a consistent orientation.
+    OBB can return corners in varying order; use angle-from-centroid + tl = min(x+y) and enforce
+    tl->tr->br->bl (tr has larger x than tl) to avoid random mirroring.
     """
     pts = np.asarray(corners, dtype=np.float32)
     if pts.shape != (4, 2):
         return pts
-    # Center
-    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
-    # Top-left = smallest x+y, bottom-right = largest x+y
-    sums = pts[:, 0] + pts[:, 1]
-    tl_idx = int(np.argmin(sums))
-    br_idx = int(np.argmax(sums))
-    other = [i for i in range(4) if i not in (tl_idx, br_idx)]
-    # Of the other two: top-right has larger x, bottom-left has smaller x
-    if pts[other[0], 0] >= pts[other[1], 0]:
-        tr_idx, bl_idx = other[0], other[1]
-    else:
-        tr_idx, bl_idx = other[1], other[0]
-    return np.array([pts[tl_idx], pts[tr_idx], pts[br_idx], pts[bl_idx]], dtype=np.float32)
+    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+    # Sort by angle around centroid for consistent cyclic order (counter-clockwise in image y-down)
+    angles = np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx)
+    order = np.argsort(angles)
+    ordered = pts[order]
+    # tl = vertex with smallest x+y (top-left in image coords)
+    sums = ordered[:, 0] + ordered[:, 1]
+    tl_pos = int(np.argmin(sums))
+    # Rotate so tl is first: [tl, next, next, next]
+    rotated = np.roll(ordered, -tl_pos, axis=0)
+    # Ensure winding tl -> tr -> br -> bl: after tl, tr must have larger x than tl (else we have tl->bl and are mirrored)
+    if rotated[1][0] <= rotated[0][0]:
+        rotated[1:4] = rotated[3:0:-1]
+    return np.array(rotated, dtype=np.float32)
 
 
 def crop_lcd_regions(image_bgr, detections, class_id=LCD_CLASS_ID):
