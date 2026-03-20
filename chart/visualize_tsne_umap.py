@@ -1,108 +1,146 @@
 """
-t-SNE and UMAP visualization using chart/sample.png.
-- Single image: splits into patches, extracts features per patch.
-- Categorizes patches by brightness: Dark (Digits) vs Light (Background/Noise).
-- Runs t-SNE/UMAP to evaluate data separability.
-
-Run from project root: python chart/visualize_tsne_umap.py
-Requirements: numpy, matplotlib, opencv-python, scikit-learn, umap-learn
+t-SNE and UMAP visualization for LCD digit vs background patches.
+Uses YOLO OBB annotations as ground-truth labels.
 """
 from pathlib import Path
 import numpy as np
 import cv2
 
-# Path Setup
+IMAGES_DIR = Path(r"F:\clone\Tool_LCD_OCR\OCR_Model\train\images")
+LABELS_DIR = Path(r"F:\clone\Tool_LCD_OCR\OCR_Model\train\labels")
 CHART_DIR = Path(__file__).resolve().parent
-SAMPLE_IMAGE = CHART_DIR / "sample.png"
-PATCH_SIZE = 16  
+PATCH_SIZE = 16
+MAX_IMAGES = 700
 OUTPUT_TSNE = CHART_DIR / "tsne.png"
 OUTPUT_UMAP = CHART_DIR / "umap.png"
 
-def load_image(path):
-    img = cv2.imread(str(path))
-    if img is None:
-        return None
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def image_to_patch_vectors(gray, patch_size=PATCH_SIZE):
-    h, w = gray.shape[:2]
-    h2 = (h // patch_size) * patch_size
-    w2 = (w // patch_size) * patch_size
-    if h2 == 0 or w2 == 0:
-        return np.empty((0, patch_size * patch_size), dtype=np.float32)
-    
-    patches = []
-    for y in range(0, h2, patch_size):
-        for x in range(0, w2, patch_size):
-            patch = gray[y : y + patch_size, x : x + patch_size]
-            # Normalize pixels to [0, 1]
-            patches.append(patch.ravel().astype(np.float32) / 255.0)
-    return np.array(patches)
+def parse_yolo_obb_label(label_path, img_w, img_h):
+    boxes = []
+    if not label_path.exists():
+        return boxes
+    with open(label_path) as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 9:
+                continue
+            cls_id = int(parts[0])
+            coords = list(map(float, parts[1:9]))
+            polygon = np.array([
+                [coords[i] * img_w, coords[i + 1] * img_h]
+                for i in range(0, 8, 2)
+            ], dtype=np.int32)
+            boxes.append((cls_id, polygon))
+    return boxes
+
+
+def patch_overlap_ratio(px, py, patch_size, polygons):
+    mask = np.zeros((patch_size, patch_size), dtype=np.uint8)
+    shifted = [poly - np.array([px, py]) for _, poly in polygons]
+    for poly in shifted:
+        cv2.fillPoly(mask, [poly], 255)
+    return np.count_nonzero(mask) / (patch_size * patch_size)
+
+
+def load_data(images_dir, labels_dir, patch_size):
+    all_patches = []
+    all_labels = []
+
+    image_paths = list(images_dir.glob("*.png")) + list(images_dir.glob("*.jpg"))
+    print(f"Found {len(image_paths)} images.")
+
+    for i, img_path in enumerate(image_paths[:MAX_IMAGES]):
+        gray = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            continue
+        h, w = gray.shape[:2]
+        label_path = labels_dir / (img_path.stem + ".txt")
+        polygons = parse_yolo_obb_label(label_path, w, h)
+
+        h2 = (h // patch_size) * patch_size
+        w2 = (w // patch_size) * patch_size
+
+        for y in range(0, h2, patch_size):
+            for x in range(0, w2, patch_size):
+                overlap = patch_overlap_ratio(x, y, patch_size, polygons)
+                if 0.10 <= overlap <= 0.70:
+                    continue
+                label = 1 if overlap > 0.70 else 0
+                patch = gray[y:y+patch_size, x:x+patch_size]
+                all_patches.append(patch.ravel().astype(np.float32) / 255.0)
+                all_labels.append(label)
+
+        if (i + 1) % 5 == 0:
+            print(f"Processed {i+1}/{min(len(image_paths), MAX_IMAGES)}")
+
+    return np.array(all_patches), np.array(all_labels)
+
 
 def main():
     CHART_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not SAMPLE_IMAGE.exists():
-        print(f"Error: Put sample.png in {CHART_DIR} and run again.")
-        return
-
-    print(f"Processing: {SAMPLE_IMAGE.name}")
-    gray = load_image(SAMPLE_IMAGE)
-    X = image_to_patch_vectors(gray, PATCH_SIZE)
+    X, y = load_data(IMAGES_DIR, LABELS_DIR, PATCH_SIZE)
+    print(f"Total patches: {X.shape[0]}")
+    print(f"Background: {np.sum(y==0)}, Digit: {np.sum(y==1)}")
 
     if X.shape[0] < 2:
-        print("Image too small for analysis.")
+        print("Not enough data.")
         return
 
-    # --- COLOR LOGIC: PROXY FOR EVALUATION ---
-    # Calculate mean brightness per patch. Dark < 0.5 (Digit), Light > 0.5 (Background)
-    patch_means = np.mean(X, axis=1)
-    # Define colors: Dark Red for digits, Light Grey for background
-    colors = np.where(patch_means < 0.5, '#8B0000', '#D3D3D3')
-    
-    # Imports for Visualization
-    try:
-        import matplotlib.pyplot as plt
-        from sklearn.manifold import TSNE
-    except ImportError:
-        print("Required: pip install matplotlib scikit-learn")
-        return
+    colors = np.where(y == 1, '#8B0000', '#D3D3D3')
 
-    # 1. RUN t-SNE
-    print("Evaluating with t-SNE...")
+    # Linear SVM
+    from sklearn.svm import LinearSVC
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import classification_report
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    clf = LinearSVC(random_state=42, max_iter=10000, class_weight='balanced')
+    clf.fit(X_train, y_train)
+    train_acc = clf.score(X_train, y_train)
+    test_acc = clf.score(X_test, y_test)
+
+    print(f"\nLinear SVM — Train: {train_acc*100:.2f}%  Test: {test_acc*100:.2f}%")
+    print(classification_report(y_test, clf.predict(X_test),
+                                target_names=["Background", "Digit"]))
+
+    import matplotlib.pyplot as plt
+    from sklearn.manifold import TSNE
+
+    # t-SNE
+    print("Running t-SNE...")
     tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, X.shape[0] - 1))
     X_tsne = tsne.fit_transform(X)
 
     plt.figure(figsize=(10, 7))
-    # Plot background first, then digits on top
-    for c in ['#D3D3D3', '#8B0000']:
-        mask = (colors == c)
-        label = "Background/Noise" if c == '#D3D3D3' else "Digit Segment"
-        plt.scatter(X_tsne[mask, 0], X_tsne[mask, 1], c=c, label=label, alpha=0.7, s=40, edgecolors='w', linewidth=0.5)
-    
-    plt.title("t-SNE: Data Separability Evaluation (Patch-based)")
-    plt.xlabel("t-SNE Feature 1")
-    plt.ylabel("t-SNE Feature 2")
+    plt.scatter(X_tsne[y==0, 0], X_tsne[y==0, 1],
+                c='#D3D3D3', label='Background (0)', alpha=0.5, s=30, edgecolors='k', linewidth=0.3)
+    plt.scatter(X_tsne[y==1, 0], X_tsne[y==1, 1],
+                c='#8B0000', label='Digit Segment (1)', alpha=0.7, s=30, edgecolors='k', linewidth=0.3)
+    plt.title(f"t-SNE: LCD Patch Separability (SVM Test Acc: {test_acc*100:.1f}%)")
+    plt.xlabel("t-SNE 1")
+    plt.ylabel("t-SNE 2")
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.savefig(OUTPUT_TSNE, dpi=200, bbox_inches="tight")
     print(f"Saved: {OUTPUT_TSNE}")
 
-    # 2. RUN UMAP
+    # UMAP
     try:
         import umap
-        print("Evaluating with UMAP...")
-        n_neighbors = min(15, X.shape[0] - 1)
-        reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=n_neighbors)
+        print("Running UMAP...")
+        reducer = umap.UMAP(n_components=2, random_state=42,
+                            n_neighbors=min(15, X.shape[0] - 1))
         X_umap = reducer.fit_transform(X)
 
         plt.figure(figsize=(10, 7))
-        for c in ['#D3D3D3', '#8B0000']:
-            mask = (colors == c)
-            label = "Background/Noise" if c == '#D3D3D3' else "Digit Segment"
-            plt.scatter(X_umap[mask, 0], X_umap[mask, 1], c=c, label=label, alpha=0.7, s=40, edgecolors='w', linewidth=0.5)
-        
-        plt.title("UMAP: Latent Space Topology (Patch-based)")
+        plt.scatter(X_umap[y==0, 0], X_umap[y==0, 1],
+                    c='#D3D3D3', label='Background (0)', alpha=0.5, s=30, edgecolors='k', linewidth=0.3)
+        plt.scatter(X_umap[y==1, 0], X_umap[y==1, 1],
+                    c='#8B0000', label='Digit Segment (1)', alpha=0.7, s=30, edgecolors='k', linewidth=0.3)
+        plt.title(f"UMAP: LCD Patch Topology (SVM Test Acc: {test_acc*100:.1f}%)")
         plt.xlabel("UMAP 1")
         plt.ylabel("UMAP 2")
         plt.legend()
@@ -110,7 +148,8 @@ def main():
         plt.savefig(OUTPUT_UMAP, dpi=200, bbox_inches="tight")
         print(f"Saved: {OUTPUT_UMAP}")
     except ImportError:
-        print("UMAP skipped. Optional: pip install umap-learn")
+        print("UMAP skipped. Install: pip install umap-learn")
+
 
 if __name__ == "__main__":
     main()
