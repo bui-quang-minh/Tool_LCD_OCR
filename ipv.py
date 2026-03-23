@@ -232,13 +232,13 @@ def _ocr_apply_try_filter(image_bgr, try_index):
     if image_bgr is None or getattr(image_bgr, "size", 0) == 0:
         return image_bgr
     filters = [
-        lambda im: im,  # 0: original
-        lambda im: cv2.cvtColor(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR),  # 1: grayscale
+        lambda im: im,  # 1: original
+        lambda im: cv2.cvtColor(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR),  # 2: grayscale
         lambda im: _ocr_bgr_to_binary_adaptive(im),  # 3: binary adaptive
-        lambda im: cv2.cvtColor(cv2.resize(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2BGR),  # 5: grayscale + resize 2x
-        lambda im: _ocr_bgr_to_border(im),  # border: morphological gradient (kernel)
-        lambda im: _ocr_invert(im),  # 8: invert
-        lambda im: _ocr_contrast(im),  # 9: contrast
+        lambda im: cv2.cvtColor(cv2.resize(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2BGR),  # 4: grayscale + resize 2x
+        lambda im: _ocr_bgr_to_border(im),  # 5 border: morphological gradient (kernel)
+        lambda im: _ocr_invert(im),  # 6: invert
+        lambda im: _ocr_contrast(im),  # 7: contrast
     ]
     idx = try_index % len(filters)
     out = filters[idx](image_bgr)
