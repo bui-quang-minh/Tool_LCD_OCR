@@ -543,26 +543,16 @@ def process_crop_for_export(crop_bgr, angle_deg, transform_name):
 
 
 def apply_transform(crop_bgr, transform_name):
-    """Apply transform for OCR: grayscale, threshold, resize, etc."""
+    """Apply the same pipeline as OCR retry filters (_ocr_apply_try_filter). Names match OCR_FILTER_NAMES."""
     if crop_bgr is None or crop_bgr.size == 0:
         return None
-    if transform_name == "None":
+    name = transform_name
+    if name == "None":
+        name = "Original"
+    if name not in OCR_FILTER_NAMES:
         return crop_bgr
-    if transform_name == "Grayscale":
-        return cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    if transform_name == "Binary (Otsu)":
-        g = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-        _, out = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return out
-    if transform_name == "Binary (adaptive)":
-        g = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-        return cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    if transform_name == "Resize 2x":
-        return cv2.resize(crop_bgr, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    if transform_name == "Grayscale + Resize 2x":
-        g = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-        return cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    return crop_bgr
+    idx = OCR_FILTER_NAMES.index(name)
+    return _ocr_apply_try_filter(crop_bgr, idx)
 
 
 def cv2_to_photoimage(bgr_or_gray):
@@ -688,9 +678,14 @@ class IPVApp:
         self.ocr_result_canvas.pack(fill=tk.X, pady=2)
 
         ttk.Label(right, text="Transform:", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(8, 0))
-        self.transform_var = tk.StringVar(value="None")
-        transforms = ["None", "Grayscale", "Binary (Otsu)", "Binary (adaptive)", "Resize 2x", "Grayscale + Resize 2x"]
-        cb = ttk.Combobox(right, textvariable=self.transform_var, values=transforms, state="readonly", width=22)
+        self.transform_var = tk.StringVar(value=OCR_FILTER_NAMES[0])
+        cb = ttk.Combobox(
+            right,
+            textvariable=self.transform_var,
+            values=list(OCR_FILTER_NAMES),
+            state="readonly",
+            width=28,
+        )
         cb.pack(fill=tk.X, pady=2)
         cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_crop_display())
         ttk.Button(right, text="Run OCR (OCR_Model)", command=self._run_ocr_model).pack(pady=8)
