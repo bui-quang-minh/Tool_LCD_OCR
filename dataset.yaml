@@ -1,6 +1,0 @@
-train: F:\clone\Tool_LCD_OCR\trainobb
-val: F:\clone\Tool_LCD_OCR\valobb
-
-nc: 2
-
-names: ["lcd", "torque"]

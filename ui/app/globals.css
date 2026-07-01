@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, #3b82f6 40%, #60a5fa 50%, #3b82f6 60%, transparent);
+  box-shadow: 0 0 12px 4px rgba(59, 130, 246, 0.6);
+  animation: scan 2s linear infinite;
+}

@@ -1,0 +1,28 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+ui/node_modules/
+ui/.next/
+ui/out/
+
+# ── Environment files ─────────────────────────────────────────────────────────
+.env
+.env.local
+backend/.env
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Model weights (tracked via Git LFS instead) ───────────────────────────────
+*.pt
+*.node
