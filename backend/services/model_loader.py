@@ -1,10 +1,3 @@
-"""
-Model loading with two backends:
-  - Local disk  (default, USE_MLFLOW_REGISTRY=false) → backend/models/
-  - MLflow registry Production alias (USE_MLFLOW_REGISTRY=true)
-
-Models are loaded once at startup and cached as module-level singletons.
-"""
 from __future__ import annotations
 
 import logging
@@ -17,8 +10,6 @@ _det_model = None
 _ocr_model = None
 
 
-# ── Loaders ──────────────────────────────────────────────────────────────────
-
 def _load_local(path):
     from ultralytics import YOLO
     if not path.exists():
@@ -28,18 +19,30 @@ def _load_local(path):
 
 
 def _load_from_mlflow(model_name: str):
-    """Load a model from the MLflow registry Production alias."""
-    import mlflow.pytorch
-    uri = f"models:/{model_name}/Production"
-    logger.info(f"Loading from MLflow registry: {uri}")
+    """Download the raw .pt artifact registered under the Production alias
+    and load it with YOLO — the training DAG logs weights as a raw artifact,
+    not as an mlflow.pytorch flavor, so we mirror that here."""
+    import mlflow
+    from ultralytics import YOLO
+
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-    return mlflow.pytorch.load_model(uri)
+    client = mlflow.MlflowClient()
 
+    mv = client.get_model_version_by_alias(model_name, "Production")
+    run_id = mv.run_id
+    logger.info(f"Loading from MLflow registry: {model_name} v{mv.version} (run {run_id})")
 
-# ── Public API ────────────────────────────────────────────────────────────────
+    local_path = client.download_artifacts(run_id, "model")
+    import os
+    pt_files = [f for f in os.listdir(local_path) if f.endswith(".pt")]
+    if not pt_files:
+        raise FileNotFoundError(f"No .pt artifact found under run {run_id}/model")
+
+    weights_path = os.path.join(local_path, pt_files[0])
+    return YOLO(weights_path)
+
 
 def get_detection_model():
-    """Return the cached detection model, loading it on first call."""
     global _det_model
     if _det_model is None:
         if settings.use_mlflow_registry:
@@ -50,7 +53,6 @@ def get_detection_model():
 
 
 def get_ocr_model():
-    """Return the cached OCR model, loading it on first call."""
     global _ocr_model
     if _ocr_model is None:
         try:
@@ -65,7 +67,6 @@ def get_ocr_model():
 
 
 def reload_models() -> dict[str, str]:
-    """Force-reload both models (called after a training run completes)."""
     global _det_model, _ocr_model
     _det_model = None
     _ocr_model = None
