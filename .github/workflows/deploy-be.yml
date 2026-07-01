@@ -1,0 +1,65 @@
+name: Deploy Backend — LCD OCR
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-be.yml'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: bui-quang-minh/lcd-ocr-be
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u bui-quang-minh --password-stdin
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+            docker rm -f lcd_be 2>/dev/null || true
+            docker run -d \
+              --name lcd_be \
+              --restart always \
+              --network lcd_net \
+              -p 8000:8000 \
+              -v /home/${{ secrets.SERVER_USER }}/Tool_LCD_OCR/backend/models:/app/models:ro \
+              -e CORS_ORIGINS='["http://${{ secrets.SERVER_IP }}:3000","http://localhost:3000"]' \
+              -e USE_MLFLOW_REGISTRY=false \
+              -e USE_MLFLOW_TRACKING=false \
+              -e MLFLOW_TRACKING_URI=http://mlflow:5000 \
+              ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+            docker image prune -f
+            echo "✅ Backend LCD OCR deployed"

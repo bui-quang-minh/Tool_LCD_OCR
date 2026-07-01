@@ -1,0 +1,36 @@
+networks:
+  lcd_net:
+    name: lcd_net
+
+services:
+  lcd_be:
+    build:
+      context: ./backend
+    image: lcd-be:latest
+    container_name: lcd_be
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/models:/app/models:ro
+    environment:
+      CORS_ORIGINS: '["http://34.142.132.238:3000","http://localhost:3000"]'
+      USE_MLFLOW_REGISTRY: "false"
+      USE_MLFLOW_TRACKING: "false"
+    networks:
+      - lcd_net
+
+  lcd_fe:
+    build:
+      context: ./ui
+      args:
+        NEXT_PUBLIC_API_URL: "http://34.142.132.238:8000"
+    image: lcd-fe:latest
+    container_name: lcd_fe
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - lcd_be
+    networks:
+      - lcd_net
