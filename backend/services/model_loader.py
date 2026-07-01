@@ -57,8 +57,8 @@ def get_ocr_model():
                 _ocr_model = _load_from_mlflow(settings.mlflow_ocr_model_name)
             else:
                 _ocr_model = _load_local(settings.ocr_model)
-        except FileNotFoundError:
-            logger.warning("OCR model not found - digit recognition will be unavailable.")
+        except Exception as exc:
+            logger.warning("OCR model not available (" + str(exc) + ") - digit recognition will be unavailable.")
             _ocr_model = None
     return _ocr_model
 
