@@ -1,20 +1,20 @@
 FROM python:3.11-slim
 
-# System deps cho OpenCV headless + ultralytics
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Cài Python deps (layer cache tách riêng)
+# Cài PyTorch CPU-only trước để ultralytics không kéo bản CUDA nặng
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy toàn bộ backend code
 COPY . .
 
-# Models sẽ được mount qua volume (không copy vào image để image nhẹ)
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
