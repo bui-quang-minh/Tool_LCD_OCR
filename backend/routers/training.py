@@ -52,31 +52,23 @@ async def trigger_training(body: TriggerRequest = TriggerRequest()) -> TriggerRe
     Runs the full pipeline:
       augment data → train detection model → train OCR model → promote to Production
     """
-    # ── Airflow integration (uncomment when ready) ────────────────────────────
-    # import httpx
-    # url = f"{settings.airflow_api_url}/dags/{settings.airflow_dag_id}/dagRuns"
-    # payload = {"conf": body.conf}
-    # if body.dag_run_id:
-    #     payload["dag_run_id"] = body.dag_run_id
-    # async with httpx.AsyncClient() as client:
-    #     resp = await client.post(
-    #         url, json=payload,
-    #         auth=(settings.airflow_username, settings.airflow_password),
-    #         timeout=10,
-    #     )
-    #     resp.raise_for_status()
-    #     data = resp.json()
-    # return TriggerResponse(dag_run_id=data["dag_run_id"], state=data["state"])
-    # ─────────────────────────────────────────────────────────────────────────
-
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Airflow not configured. "
-            "Set AIRFLOW_API_URL in .env and uncomment the integration block "
-            "in routers/training.py."
-        ),
-    )
+    import httpx
+    url = settings.airflow_api_url + "/dags/" + settings.airflow_dag_id + "/dagRuns"
+    payload = {"conf": body.conf}
+    if body.dag_run_id:
+        payload["dag_run_id"] = body.dag_run_id
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url, json=payload,
+                auth=(settings.airflow_username, settings.airflow_password),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return TriggerResponse(dag_run_id=data["dag_run_id"], state=data["state"])
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Failed to reach Airflow: " + str(exc))
 
 
 @router.get("/runs", response_model=list[RunSummary])
@@ -132,15 +124,14 @@ async def reload_models():
 @router.get("/dag-status/{dag_run_id}")
 async def dag_status(dag_run_id: str):
     """Check the status of an Airflow DAG run."""
-    # ── Airflow integration (uncomment when ready) ────────────────────────────
-    # import httpx
-    # url = f"{settings.airflow_api_url}/dags/{settings.airflow_dag_id}/dagRuns/{dag_run_id}"
-    # async with httpx.AsyncClient() as client:
-    #     resp = await client.get(
-    #         url, auth=(settings.airflow_username, settings.airflow_password)
-    #     )
-    #     resp.raise_for_status()
-    #     return resp.json()
-    # ─────────────────────────────────────────────────────────────────────────
-
-    raise HTTPException(status_code=501, detail="Airflow not configured.")
+    import httpx
+    url = settings.airflow_api_url + "/dags/" + settings.airflow_dag_id + "/dagRuns/" + dag_run_id
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url, auth=(settings.airflow_username, settings.airflow_password)
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Failed to reach Airflow: " + str(exc))
