@@ -62,6 +62,20 @@ async def predict(file: UploadFile = File(...)) -> PredictResponse:
     from main import READINGS
     READINGS.labels(verdict=result.verdict).inc()
 
+    # ── Log prediction for drift monitoring ────────────────────────────────────
+    import json, os, time
+    log_dir = "/app/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_entry = {
+        "timestamp": time.time(),
+        "value_nm": result.value_nm,
+        "verdict": result.verdict,
+        "n_tries": result.n_tries,
+        "filter_used": result.filter_used,
+    }
+    with open(os.path.join(log_dir, "predictions.jsonl"), "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+
     logger.info(
         "predict file=%s reading=%s verdict=%s tries=%d filter=%s",
         filename, result.reading, result.verdict, result.n_tries, result.filter_used,
