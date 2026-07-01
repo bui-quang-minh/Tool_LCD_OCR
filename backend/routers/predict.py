@@ -58,6 +58,10 @@ async def predict(file: UploadFile = File(...)) -> PredictResponse:
             run.log_metric("value_nm", result.value_nm)
         run.log_metric("n_tries", result.n_tries)
 
+    # ── Prometheus business metric: count by verdict ──────────────────────────
+    from main import READINGS
+    READINGS.labels(verdict=result.verdict).inc()
+
     logger.info(
         "predict file=%s reading=%s verdict=%s tries=%d filter=%s",
         filename, result.reading, result.verdict, result.n_tries, result.filter_used,

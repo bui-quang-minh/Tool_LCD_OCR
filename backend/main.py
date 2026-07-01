@@ -3,8 +3,9 @@ FastAPI backend for LCD OCR Inspector.
 
 Startup order:
   1. CORS middleware attached
-  2. Models loaded into memory (det + ocr)
-  3. Routers mounted
+  2. Prometheus instrumentator attached (/metrics)
+  3. Models loaded into memory (det + ocr)
+  4. Routers mounted
 
 Run:
   uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -14,6 +15,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Counter
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from config import settings
 from routers import predict, training
@@ -23,6 +26,11 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ── Custom business metric: readings by verdict (OK / NG / unknown) ──────────
+READINGS = Counter(
+    "lcd_readings_total", "Total OCR readings by verdict", ["verdict"]
+)
 
 
 @asynccontextmanager
@@ -54,6 +62,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Prometheus: standard HTTP metrics + /metrics endpoint ─────────────────────
+Instrumentator().instrument(app).expose(app)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(predict.router)
