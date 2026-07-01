@@ -2,12 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    --font-sans: var(--geist-sans-font);
+    --font-mono: var(--geist-mono-font);
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-100;
+    font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  }
+
+  * {
+    @apply border-zinc-800;
+  }
+}
+
+/* Scan line for loading view — motivated animation showing image analysis */
+@keyframes scan {
+  0%   { top: -4px; opacity: 0.8; }
+  90%  { opacity: 0.8; }
+  100% { top: calc(100% + 4px); opacity: 0; }
+}
+
 .scan-line {
   position: absolute;
   left: 0;
   right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, #3b82f6 40%, #60a5fa 50%, #3b82f6 60%, transparent);
-  box-shadow: 0 0 12px 4px rgba(59, 130, 246, 0.6);
-  animation: scan 2s linear infinite;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, theme(colors.zinc.400) 40%, theme(colors.zinc.200) 50%, theme(colors.zinc.400) 60%, transparent 100%);
+  animation: scan 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up {
+  animation: fade-up 0.3s ease-out both;
 }

@@ -19,6 +19,8 @@ export type PredictResult = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+const STEPS = ["Upload", "Analyzing", "Result"] as const;
+
 export default function Home() {
   const [step, setStep] = useState<Step>("upload");
   const [result, setResult] = useState<PredictResult | null>(null);
@@ -34,7 +36,6 @@ export default function Home() {
     try {
       const body = new FormData();
       body.append("file", file);
-
       const res = await fetch(`${API_URL}/predict`, { method: "POST", body });
 
       if (!res.ok) {
@@ -60,64 +61,67 @@ export default function Home() {
   }, [preview]);
 
   const isResult = step === "result";
-  const activeStepIndex =
-    step === "error" ? 0 : step === "upload" ? 0 : step === "loading" ? 1 : 2;
+  const activeIndex =
+    step === "upload" || step === "error" ? 0 : step === "loading" ? 1 : 2;
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center p-6">
-      {/* Container expands when showing results */}
-      <div className={`w-full transition-all duration-500 ${isResult ? "max-w-6xl" : "max-w-2xl"}`}>
+    <main className="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+      <div className={`w-full transition-[max-width] duration-500 ease-out ${isResult ? "max-w-6xl" : "max-w-xl"}`}>
 
-        {/* Header — compact on result */}
-        <div className={`text-center ${isResult ? "mb-4" : "mb-8"}`}>
-          <h1 className={`font-bold tracking-tight ${isResult ? "text-xl" : "text-2xl"}`}>
+        {/* Header */}
+        <div className={`${isResult ? "mb-6" : "mb-10"}`}>
+          <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">
+            Torque · 60–80 Nm
+          </p>
+          <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">
             LCD OCR Inspector
           </h1>
-          {!isResult && (
-            <p className="text-gray-500 text-sm mt-1">
-              Torque wrench reading detection · 60–80 Nm validation
-            </p>
-          )}
         </div>
 
-        {/* Step indicator */}
-        <div className={`flex items-center justify-center ${isResult ? "mb-6" : "mb-8"}`}>
-          {(["Upload", "Analyzing", "Result"] as const).map((label, i) => (
-            <div key={label} className="flex items-center">
-              <div
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                  i === activeStepIndex
-                    ? "bg-blue-600 text-white"
-                    : i < activeStepIndex
-                    ? "text-blue-400"
-                    : "text-gray-600"
-                }`}
-              >
-                <span
-                  className={`w-5 h-5 rounded-full border flex items-center justify-center text-xs font-bold ${
-                    i < activeStepIndex
-                      ? "border-blue-400 bg-blue-400 text-gray-950"
-                      : i === activeStepIndex
-                      ? "border-white text-white"
-                      : "border-gray-600 text-gray-600"
-                  }`}
-                >
-                  {i < activeStepIndex ? "✓" : i + 1}
-                </span>
-                {label}
+        {/* Step indicator: dots + lines */}
+        <div className="flex items-center mb-8">
+          {STEPS.map((label, i) => {
+            const done = i < activeIndex;
+            const active = i === activeIndex;
+            return (
+              <div key={label} className="flex items-center">
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`w-2 h-2 rounded-full transition-colors duration-300 ${
+                      done
+                        ? "bg-zinc-400"
+                        : active
+                        ? "bg-zinc-100"
+                        : "bg-zinc-700"
+                    }`}
+                  />
+                  <span
+                    className={`text-xs transition-colors duration-300 ${
+                      active ? "text-zinc-200 font-medium" : done ? "text-zinc-500" : "text-zinc-700"
+                    }`}
+                  >
+                    {label}
+                  </span>
+                </div>
+                {i < STEPS.length - 1 && (
+                  <div
+                    className={`mx-3 h-px w-8 transition-colors duration-300 ${
+                      done ? "bg-zinc-600" : "bg-zinc-800"
+                    }`}
+                  />
+                )}
               </div>
-              {i < 2 && (
-                <div className={`w-10 h-px mx-1 ${i < activeStepIndex ? "bg-blue-400" : "bg-gray-800"}`} />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {/* Content — no card wrapper on result step so it can go full width */}
+        {/* Content */}
         {isResult && result ? (
-          <ResultView result={result} onReset={reset} />
+          <div className="fade-up">
+            <ResultView result={result} onReset={reset} />
+          </div>
         ) : (
-          <div className="rounded-2xl border border-gray-800 bg-gray-900/50 p-6 backdrop-blur-sm">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
             {(step === "upload" || step === "error") && (
               <UploadZone onFile={handleFile} error={error} />
             )}
