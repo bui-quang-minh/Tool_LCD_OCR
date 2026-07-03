@@ -54,7 +54,7 @@ jobs:
             docker run -d \
               --name lcd_fe \
               --restart always \
-              --network lcd_net \
+              --network lcd_ocr_net \
               -p 3000:3000 \
               ghcr.io/${{ env.IMAGE_NAME }}:latest
 

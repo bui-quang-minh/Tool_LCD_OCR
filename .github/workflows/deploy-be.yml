@@ -52,7 +52,7 @@ jobs:
             docker run -d \
               --name lcd_be \
               --restart always \
-              --network lcd_net \
+              --network lcd_ocr_net \
               -p 8000:8000 \
               -v /home/${{ secrets.SERVER_USER }}/Tool_LCD_OCR/backend/models:/app/models:ro \
               -e CORS_ORIGINS='["http://${{ secrets.SERVER_IP }}:3000","http://localhost:3000"]' \
