@@ -97,10 +97,10 @@ services:
       - mlflow_artifacts:/mlflow/artifacts
     command: >
       bash -c "pip install mlflow psycopg2-binary -q &&
-               mlflow server
-               --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-mlops/mlflow
-               --default-artifact-root /mlflow/artifacts
-               --host 0.0.0.0 --port 5000"
+      mlflow server
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-mlops/mlflow
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0 --port 5000"
     networks:
       - lcd_ocr_net
     depends_on:
