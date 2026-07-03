@@ -37,6 +37,7 @@ services:
   lcd_be:
     build:
       context: ./backend
+    image: ghcr.io/bui-quang-minh/lcd-ocr-be:latest
     container_name: lcd_be
     restart: always
     ports:
@@ -56,6 +57,7 @@ services:
       context: ./ui
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    image: ghcr.io/bui-quang-minh/lcd-ocr-fe:latest
     container_name: lcd_fe
     restart: always
     ports:

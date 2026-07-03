@@ -48,15 +48,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u bui-quang-minh --password-stdin
-            docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
 
-            docker rm -f lcd_fe 2>/dev/null || true
-            docker run -d \
-              --name lcd_fe \
-              --restart always \
-              --network lcd_ocr_net \
-              -p 3000:3000 \
-              ghcr.io/${{ env.IMAGE_NAME }}:latest
+            cd /home/${{ secrets.SERVER_USER }}/Tool_LCD_OCR
+            git pull
+            docker compose pull lcd_fe
+            docker compose up -d lcd_fe
 
             docker image prune -f
             echo "✅ Frontend LCD OCR deployed"
