@@ -1,0 +1,41 @@
+name: Deploy Infra — LCD OCR
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**'
+      - 'evidently/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy-infra.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync infra stack on server via docker compose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /home/${{ secrets.SERVER_USER }}/Tool_LCD_OCR
+            git pull
+
+            # No-op after the first run: frees up names/ports from the legacy
+            # standalone mlops/monitoring containers so compose can adopt them.
+            # lcd_be/lcd_fe are intentionally excluded — those are owned by
+            # deploy-be.yml/deploy-fe.yml.
+            docker rm -f postgres_mlops mlflow evidently_lcd evidently grafana prometheus node_exporter \
+              airflow_webserver airflow_scheduler airflow_init 2>/dev/null || true
+
+            docker compose pull postgres-mlops mlflow prometheus grafana node-exporter
+            docker compose up -d --build \
+              postgres-mlops mlflow airflow-init airflow-webserver airflow-scheduler \
+              evidently_lcd prometheus grafana node-exporter
+
+            docker compose ps
+            docker image prune -f
+            echo "✅ Infra stack synced via docker compose"
