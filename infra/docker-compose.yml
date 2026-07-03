@@ -1,0 +1,115 @@
+networks:
+  app_prod:
+    external: true
+  mlops_net:
+    name: mlops_net
+
+volumes:
+  postgres_mlops_data:
+  mlflow_artifacts:
+    external: true
+    name: mlops_mlflow_artifacts
+
+x-airflow-common: &airflow-common
+  image: airflow-custom:2.8.1
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-mlops/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+  volumes:
+    - /opt/mlops/airflow/dags:/opt/airflow/dags
+    - /opt/mlops/airflow/logs:/opt/airflow/logs
+    - /opt/mlops/lcd_training:/opt/mlops/lcd_training
+    - /opt/mlops/lcd_dataset:/opt/mlops/lcd_dataset
+    - mlflow_artifacts:/mlflow/artifacts
+    - /opt/mlops/airflow/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres-mlops:
+      condition: service_healthy
+  networks:
+    - mlops_net
+
+services:
+  postgres-mlops:
+    image: postgres:15-alpine
+    container_name: postgres_mlops
+    restart: always
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_mlops_data:/var/lib/postgresql/data
+      - /opt/mlops/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - mlops_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    image: python:3.10-slim
+    container_name: mlflow
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    command: >
+      bash -c "pip install mlflow psycopg2-binary -q &&
+               mlflow server
+               --backend-store-uri postgresql+psycopg2://airflow:airflow@postgres-mlops/mlflow
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0 --port 5000 --app-name basic-auth"
+    networks:
+      - mlops_net
+    depends_on:
+      postgres-mlops:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    command: bash -c "airflow db init && airflow users create --username ${AIRFLOW_ADMIN_USER} --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com"
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    restart: always
+    ports:
+      - "8081:8080"
+    command: webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    restart: always
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  evidently:
+    image: python:3.10-slim
+    container_name: evidently
+    restart: always
+    ports:
+      - "8082:8000"
+    command: >
+      bash -c "pip install evidently fastapi uvicorn pandas scikit-learn -q &&
+               uvicorn app:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - /opt/mlops/evidently:/app
+    working_dir: /app
+    networks:
+      - mlops_net

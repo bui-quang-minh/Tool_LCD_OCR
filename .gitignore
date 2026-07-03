@@ -47,3 +47,4 @@ htmlcov/
 # ── Model weights (tracked via Git LFS instead) ───────────────────────────────
 *.pt
 *.node
+infra/.env

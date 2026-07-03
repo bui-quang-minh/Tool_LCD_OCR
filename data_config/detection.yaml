@@ -1,0 +1,4 @@
+train: /opt/mlops/lcd_dataset/trainobb/images
+val: /opt/mlops/lcd_dataset/valobb/images
+nc: 2
+names: ["lcd", "torque"]

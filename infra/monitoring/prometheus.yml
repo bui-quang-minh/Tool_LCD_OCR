@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: 'lcd-ocr-be'
+    static_configs:
+      - targets: ['lcd_be:8000']
+        labels:
+          env: 'prod'
+          service: 'lcd-ocr'
+    metrics_path: '/metrics'
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node_exporter:9100']
+        labels:
+          env: 'prod'
