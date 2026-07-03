@@ -30,8 +30,12 @@
   left: 0;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent 0%, theme(colors.zinc.400) 40%, theme(colors.zinc.200) 50%, theme(colors.zinc.400) 60%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, theme(colors.zinc.600) 40%, theme(colors.zinc.400) 50%, theme(colors.zinc.600) 60%, transparent 100%);
   animation: scan 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.dark .scan-line {
+  background: linear-gradient(90deg, transparent 0%, theme(colors.zinc.400) 40%, theme(colors.zinc.200) 50%, theme(colors.zinc.400) 60%, transparent 100%);
 }
 
 @keyframes fade-up {
