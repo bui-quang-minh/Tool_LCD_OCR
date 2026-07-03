@@ -1,12 +1,42 @@
 networks:
-  lcd_net:
-    name: lcd_net
+  lcd_ocr_net:
+    name: lcd_ocr_net
+
+volumes:
+  postgres_mlops_data:
+  mlflow_artifacts:
+  prometheus_data:
+  grafana_data:
+  lcd_prediction_logs:
+  evidently_reports:
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./infra/airflow
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-mlops/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+  volumes:
+    - ./infra/airflow/dags:/opt/airflow/dags
+    - ./infra/airflow/logs:/opt/airflow/logs
+    - ./training:/opt/mlops/lcd_training
+    - ${LCD_DATASET_DIR}:/opt/mlops/lcd_dataset
+    - mlflow_artifacts:/mlflow/artifacts
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres-mlops:
+      condition: service_healthy
+  networks:
+    - lcd_ocr_net
 
 services:
   lcd_be:
     build:
       context: ./backend
-    image: lcd-be:latest
     container_name: lcd_be
     restart: always
     ports:
@@ -14,18 +44,18 @@ services:
     volumes:
       - ./backend/models:/app/models:ro
     environment:
-      CORS_ORIGINS: '["http://34.142.132.238:3000","http://localhost:3000"]'
-      USE_MLFLOW_REGISTRY: "false"
-      USE_MLFLOW_TRACKING: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      USE_MLFLOW_REGISTRY: ${USE_MLFLOW_REGISTRY:-false}
+      USE_MLFLOW_TRACKING: ${USE_MLFLOW_TRACKING:-false}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
     networks:
-      - lcd_net
+      - lcd_ocr_net
 
   lcd_fe:
     build:
       context: ./ui
       args:
-        NEXT_PUBLIC_API_URL: "http://34.142.132.238:8000"
-    image: lcd-fe:latest
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     container_name: lcd_fe
     restart: always
     ports:
@@ -33,4 +63,126 @@ services:
     depends_on:
       - lcd_be
     networks:
-      - lcd_net
+      - lcd_ocr_net
+
+  postgres-mlops:
+    image: postgres:15-alpine
+    container_name: postgres_mlops
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_mlops_data:/var/lib/postgresql/data
+      - ./infra/postgres/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - lcd_ocr_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    image: python:3.10-slim
+    container_name: mlflow
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    command: >
+      bash -c "pip install mlflow psycopg2-binary -q &&
+               mlflow server
+               --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-mlops/mlflow
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0 --port 5000"
+    networks:
+      - lcd_ocr_net
+    depends_on:
+      postgres-mlops:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    command: bash -c "airflow db init && airflow users create --username ${AIRFLOW_ADMIN_USER} --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com"
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    restart: always
+    ports:
+      - "8081:8080"
+    command: webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    restart: always
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  evidently_lcd:
+    build:
+      context: ./evidently
+    container_name: evidently_lcd
+    restart: always
+    ports:
+      - "8090:8000"
+    volumes:
+      - lcd_prediction_logs:/app_logs
+      - evidently_reports:/app/reports
+    networks:
+      - lcd_ocr_net
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - lcd_ocr_net
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: always
+    ports:
+      - "3003:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - lcd_ocr_net
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: always
+    ports:
+      - "9100:9100"
+    networks:
+      - lcd_ocr_net

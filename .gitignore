@@ -50,3 +50,9 @@ infra/.env
 
 # ── Model weights: theo dõi trực tiếp trong Git (mỗi file <100MB) ────────────
 # (không dùng Git LFS để tránh yêu cầu cài thêm công cụ khi thầy/người khác clone)
+
+# ── Runtime data không nên track (log sinh ra lúc chạy, dataset đặt tay) ─────
+infra/airflow/logs/*
+!infra/airflow/logs/.gitkeep
+data/lcd_dataset/*
+!data/lcd_dataset/.gitkeep
