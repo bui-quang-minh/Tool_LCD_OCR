@@ -36,10 +36,10 @@ export default function ResultView({ result, onReset }: Props) {
           {/* Verdict + reading */}
           <div className={`rounded-xl border p-5 ${
             isOK
-              ? "border-emerald-900/60 bg-emerald-950/30"
+              ? "border-emerald-300 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/30"
               : isNG
-              ? "border-red-900/60 bg-red-950/30"
-              : "border-zinc-800 bg-zinc-900"
+              ? "border-red-300 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30"
+              : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900"
           }`}>
             <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-3">
               Detected reading
@@ -47,20 +47,20 @@ export default function ResultView({ result, onReset }: Props) {
             <div className="flex items-end justify-between">
               <div>
                 {displayValue ? (
-                  <p className="text-4xl font-semibold tracking-tight text-zinc-100 leading-none">
+                  <p className="text-4xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 leading-none">
                     {displayValue}
                     <span className="text-lg text-zinc-500 font-normal ml-1.5">Nm</span>
                   </p>
                 ) : (
-                  <p className="text-2xl font-mono text-zinc-400">{result.reading || "—"}</p>
+                  <p className="text-2xl font-mono text-zinc-500 dark:text-zinc-400">{result.reading || "—"}</p>
                 )}
               </div>
               <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded ${
                 isOK
-                  ? "bg-emerald-500/20 text-emerald-400"
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400"
                   : isNG
-                  ? "bg-red-500/20 text-red-400"
-                  : "bg-zinc-800 text-zinc-500"
+                  ? "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400"
+                  : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-500"
               }`}>
                 {isUnknown ? "N/A" : result.verdict}
               </span>
@@ -69,48 +69,53 @@ export default function ResultView({ result, onReset }: Props) {
 
           {/* Range bar */}
           {displayValue && !isUnknown && (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-4">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-5 py-4">
               <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-4">
                 Torque range
               </p>
               <div className="relative h-1.5 mb-3">
-                <div className="absolute inset-0 rounded-full bg-zinc-800" />
-                {/* OK band 60–80 of 120 = 50%–66.7% */}
+                <div className="absolute inset-0 rounded-full bg-zinc-200 dark:bg-zinc-800" />
                 <div
-                  className="absolute h-full rounded-full bg-emerald-900/60 border-x border-emerald-800/60"
+                  className="absolute h-full rounded-full bg-emerald-100 dark:bg-emerald-900/60 border-x border-emerald-300 dark:border-emerald-800/60"
                   style={{ left: "50%", width: "13.9%" }}
                 />
                 {result.value_nm !== null && (
                   <div
                     className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full ${
-                      isOK ? "bg-emerald-400" : "bg-red-500"
+                      isOK ? "bg-emerald-500" : "bg-red-500"
                     }`}
                     style={{ left: `${Math.min(100, Math.max(0, (result.value_nm / 120) * 100))}%` }}
                   />
                 )}
               </div>
-              <div className="flex justify-between text-[10px] font-mono text-zinc-700">
+              <div className="flex justify-between text-[10px] font-mono text-zinc-400 dark:text-zinc-700">
                 <span>0</span>
-                <span className="text-emerald-700">60</span>
-                <span className="text-emerald-700">80</span>
+                <span className="text-emerald-600 dark:text-emerald-700">60</span>
+                <span className="text-emerald-600 dark:text-emerald-700">80</span>
                 <span>120</span>
               </div>
             </div>
           )}
 
           {/* Details */}
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-4">
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-5 py-4">
             <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-3">
               Details
             </p>
-            <div className="divide-y divide-zinc-800/60">
+            <div className="divide-y divide-zinc-200 dark:divide-zinc-800/60">
               <StatRow label="Filter" value={result.filter_used || "—"} />
               <StatRow label="Retries" value={`${result.n_tries} / 7`} />
               <StatRow label="Valid range" value="60 – 80 Nm" />
               <StatRow
                 label="Status"
                 value={isOK ? "Pass" : isNG ? "Fail" : "Unknown"}
-                valueClass={isOK ? "text-emerald-400" : isNG ? "text-red-400" : "text-zinc-500"}
+                valueClass={
+                  isOK
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : isNG
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-zinc-500"
+                }
               />
             </div>
           </div>
@@ -118,7 +123,7 @@ export default function ResultView({ result, onReset }: Props) {
           {/* Reset */}
           <button
             onClick={onReset}
-            className="w-full py-2.5 rounded-lg border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors text-sm"
+            className="w-full py-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors text-sm"
           >
             Analyze another image
           </button>
@@ -159,12 +164,12 @@ export default function ResultView({ result, onReset }: Props) {
           />
           <button
             onClick={closeLightbox}
-            className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-zinc-900/80 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 transition-colors"
+            className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-zinc-100/90 dark:bg-zinc-900/80 border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors"
             aria-label="Close"
           >
             <X size={16} />
           </button>
-          <p className="absolute bottom-4 text-zinc-600 text-xs font-mono">
+          <p className="absolute bottom-4 text-zinc-500 text-xs font-mono">
             ESC to close
           </p>
         </div>
@@ -183,10 +188,10 @@ function ImageCard({
   onOpen: (src: string) => void;
 }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden group">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800">
-        <span className="text-xs text-zinc-400">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-600 bg-zinc-800 px-2 py-0.5 rounded">
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden group">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-200 dark:border-zinc-800">
+        <span className="text-xs text-zinc-600 dark:text-zinc-400">{label}</span>
+        <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-600 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded">
           {badge}
         </span>
       </div>
@@ -200,8 +205,8 @@ function ImageCard({
           }`}
         />
         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="bg-zinc-950/70 rounded-full p-2 border border-zinc-700">
-            <ArrowsOut size={18} className="text-zinc-300" />
+          <div className="bg-white/80 dark:bg-zinc-950/70 rounded-full p-2 border border-zinc-300 dark:border-zinc-700">
+            <ArrowsOut size={18} className="text-zinc-700 dark:text-zinc-300" />
           </div>
         </div>
       </div>
@@ -210,7 +215,7 @@ function ImageCard({
 }
 
 function StatRow({
-  label, value, valueClass = "text-zinc-300",
+  label, value, valueClass = "text-zinc-700 dark:text-zinc-300",
 }: {
   label: string;
   value: string;

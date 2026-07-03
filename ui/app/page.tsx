@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import UploadZone from "@/components/UploadZone";
 import LoadingView from "@/components/LoadingView";
 import ResultView from "@/components/ResultView";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type Step = "upload" | "loading" | "result" | "error";
 
@@ -66,6 +67,11 @@ export default function Home() {
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+      {/* Theme toggle — top-right corner */}
+      <div className="fixed top-4 right-4">
+        <ThemeToggle />
+      </div>
+
       <div className={`w-full transition-[max-width] duration-500 ease-out ${isResult ? "max-w-6xl" : "max-w-xl"}`}>
 
         {/* Header */}
@@ -73,7 +79,7 @@ export default function Home() {
           <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">
             Torque · 60–80 Nm
           </p>
-          <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">
+          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
             LCD OCR Inspector
           </h1>
         </div>
@@ -91,13 +97,17 @@ export default function Home() {
                       done
                         ? "bg-zinc-400"
                         : active
-                        ? "bg-zinc-100"
-                        : "bg-zinc-700"
+                        ? "bg-zinc-900 dark:bg-zinc-100"
+                        : "bg-zinc-300 dark:bg-zinc-700"
                     }`}
                   />
                   <span
                     className={`text-xs transition-colors duration-300 ${
-                      active ? "text-zinc-200 font-medium" : done ? "text-zinc-500" : "text-zinc-700"
+                      active
+                        ? "text-zinc-800 dark:text-zinc-200 font-medium"
+                        : done
+                        ? "text-zinc-500"
+                        : "text-zinc-400 dark:text-zinc-600"
                     }`}
                   >
                     {label}
@@ -106,7 +116,7 @@ export default function Home() {
                 {i < STEPS.length - 1 && (
                   <div
                     className={`mx-3 h-px w-8 transition-colors duration-300 ${
-                      done ? "bg-zinc-600" : "bg-zinc-800"
+                      done ? "bg-zinc-400 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-800"
                     }`}
                   />
                 )}
@@ -121,7 +131,7 @@ export default function Home() {
             <ResultView result={result} onReset={reset} />
           </div>
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-6">
             {(step === "upload" || step === "error") && (
               <UploadZone onFile={handleFile} error={error} />
             )}

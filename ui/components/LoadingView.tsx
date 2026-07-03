@@ -15,7 +15,7 @@ export default function LoadingView({ preview }: Props) {
 
       {/* Image with scan overlay */}
       {preview && (
-        <div className="relative w-full rounded-lg overflow-hidden bg-zinc-950 border border-zinc-800">
+        <div className="relative w-full rounded-lg overflow-hidden bg-zinc-950 border border-zinc-200 dark:border-zinc-800">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={preview}
@@ -38,20 +38,20 @@ export default function LoadingView({ preview }: Props) {
       {/* Spinner + label */}
       <div className="flex flex-col items-center gap-3">
         <div className="relative w-10 h-10">
-          <div className="absolute inset-0 rounded-full border border-zinc-800" />
-          <div className="absolute inset-0 rounded-full border border-zinc-400 border-t-transparent animate-spin" />
+          <div className="absolute inset-0 rounded-full border border-zinc-200 dark:border-zinc-800" />
+          <div className="absolute inset-0 rounded-full border border-zinc-600 dark:border-zinc-400 border-t-transparent animate-spin" />
         </div>
         <div className="text-center">
-          <p className="text-sm text-zinc-300 font-medium">Analyzing image</p>
-          <p className="text-xs text-zinc-600 mt-0.5">YOLO · OCR pipeline</p>
+          <p className="text-sm text-zinc-700 dark:text-zinc-300 font-medium">Analyzing image</p>
+          <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-0.5">YOLO · OCR pipeline</p>
         </div>
       </div>
 
       {/* Pipeline steps */}
-      <div className="w-full divide-y divide-zinc-800/60">
+      <div className="w-full divide-y divide-zinc-200 dark:divide-zinc-800/60">
         {STEPS.map((label, i) => (
           <div key={i} className="flex items-center gap-3 py-2.5 text-xs text-zinc-500">
-            <span className="w-1 h-1 rounded-full bg-zinc-700 shrink-0" />
+            <span className="w-1 h-1 rounded-full bg-zinc-300 dark:bg-zinc-700 shrink-0" />
             {label}
           </div>
         ))}
