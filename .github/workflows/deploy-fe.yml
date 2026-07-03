@@ -47,6 +47,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -e
             echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u bui-quang-minh --password-stdin
 
             cd /home/${{ secrets.SERVER_USER }}/Tool_LCD_OCR
