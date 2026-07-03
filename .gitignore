@@ -45,6 +45,8 @@ logs/
 htmlcov/
 
 # ── Model weights (tracked via Git LFS instead) ───────────────────────────────
-*.pt
 *.node
 infra/.env
+
+# ── Model weights: theo dõi trực tiếp trong Git (mỗi file <100MB) ────────────
+# (không dùng Git LFS để tránh yêu cầu cài thêm công cụ khi thầy/người khác clone)
