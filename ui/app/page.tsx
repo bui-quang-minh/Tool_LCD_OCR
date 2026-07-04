@@ -80,7 +80,7 @@ export default function Home() {
             Torque · 60–80 Nm
           </p>
           <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
-            LCD OCR Inspector
+            LCD Inspector
           </h1>
         </div>
 
