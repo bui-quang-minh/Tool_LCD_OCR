@@ -54,4 +54,4 @@ jobs:
             docker compose up -d lcd_be
 
             docker image prune -f
-            echo "✅ Backend LCD OCR deployed"
+            echo "Backend LCD OCR deployed"
