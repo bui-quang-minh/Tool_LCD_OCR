@@ -45,6 +45,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/models:/app/models:ro
+      - mlflow_artifacts:/mlflow/artifacts:ro
     environment:
       CORS_ORIGINS: ${CORS_ORIGINS}
       USE_MLFLOW_REGISTRY: ${USE_MLFLOW_REGISTRY:-false}
